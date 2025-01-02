@@ -1,0 +1,8 @@
+Flask
+requests
+python-dotenv
+aiohttp
+Werkzeug
+dataclasses; python_version<'3.7'
+logging; python_version<'3.9'
+xmlrpc

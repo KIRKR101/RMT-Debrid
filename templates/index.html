@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real Debrid Downloader</title>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #60a5fa;
+            --background-color: #f8fafc;
+            --text-color: #1e293b;
+            --border-color: #e2e8f0;
+            --error-color: #dc2626;
+            --success-color: #16a34a;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            line-height: 1.5;
+            margin: 0;
+            padding: 1rem;
+            background-color: var(--background-color);
+            color: var(--text-color);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .title {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .tabs {
+            display: flex;
+            margin-bottom: 1rem;
+            overflow-x: auto;
+        }
+
+        .tab {
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border-color);
+            border-bottom: none;
+            border-radius: 0.5rem 0.5rem 0 0;
+            cursor: pointer;
+            background-color: var(--background-color);
+            transition: background-color 0.2s;
+            white-space: nowrap;
+        }
+
+        .tab:hover {
+            background-color: #f1f5f9;
+        }
+
+        .tab.active {
+            background-color: white;
+            font-weight: 600;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0 0 0.5rem 0.5rem;
+            background-color: white;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .input {
+            flex: 1;
+            padding: 0.5rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.375rem;
+            font-size: 1rem;
+            line-height: 1.5;
+        }
+
+        .button {
+            padding: 0.5rem 1rem;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 0.375rem;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .button:hover {
+            background-color: var(--secondary-color);
+        }
+
+        .button:disabled {
+            background-color: #cbd5e1;
+            cursor: default;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 0.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        th {
+            background-color: var(--background-color);
+            font-weight: 600;
+        }
+
+        .download-item {
+            background: white;
+            padding: 1rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border-color);
+            margin-bottom: 1rem;
+        }
+
+        .download-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .download-title {
+            font-weight: 600;
+            word-break: break-all;
+            flex: 1;
+        }
+
+        .download-status {
+            font-size: 0.875rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+            background-color: var(--background-color);
+            white-space: nowrap;
+        }
+
+        .progress {
+            width: 100%;
+            height: 0.5rem;
+            background-color: var(--background-color);
+            border-radius: 9999px;
+            overflow: hidden;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background-color: var(--primary-color);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .stats {
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .error {
+            color: var(--error-color);
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .files-list {
+            margin-top: 0.5rem;
+            padding-left: 1.5rem;
+            list-style-type: disc;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem
+        }
+
+        .files-list li {
+            margin-right: 0.5rem;
+            white-space: nowrap;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            padding: 2rem;
+        }
+        
+        .feedback {
+            margin-bottom: 1rem;
+            padding: 0.5rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.375rem;
+        }
+
+        .feedback.success {
+            background-color: #dcfce7;
+            border-color: #86efac;
+            color: var(--success-color);
+        }
+
+        .feedback.error {
+            background-color: #fee2e2;
+            border-color: #fecaca;
+            color: var(--error-color);
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        
+            .title {
+                margin-bottom: 1rem;
+            }
+        
+            .tabs {
+                flex-wrap: wrap;
+            }
+        
+            .tab {
+                flex: 1 0 50%;
+            }
+        
+            .input-group {
+                flex-direction: column;
+            }
+
+            .files-list {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1 class="title">Real Debrid Downloader</h1>
+        </header>
+
+        <div class="tabs">
+            <button class="tab active" data-target="active-downloads">Active Downloads</button>
+            <button class="tab" data-target="my-torrents">My Torrents</button>
+        </div>
+
+        <div id="active-downloads" class="tab-content active">
+            <div class="input-group">
+                <input type="text" id="magnetInput" class="input" placeholder="Enter magnet link...">
+                <button id="addButton" class="button">Add Download</button>
+            </div>
+            <div id="addFeedback" class="feedback" style="display: none;"></div>
+            <div id="downloads">
+                <!-- Downloads will be inserted here -->
+            </div>
+        </div>
+
+        <div id="my-torrents" class="tab-content">
+            <div class="loading" id="torrentsLoading">
+                Loading torrents...
+            </div>
+            <div id="my-torrents-list">
+                <!-- Torrents will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class DownloadManager {
+            constructor() {
+                this.downloads = new Map();
+                this.myTorrents = [];
+                this.setupEventListeners();
+                this.startStatusPolling();
+                this.initTabs();
+                this.setupEventSource(); // Initialize SSE connection
+            }
+
+            initTabs() {
+                document.querySelectorAll('.tab').forEach(tab => {
+                    tab.addEventListener('click', () => {
+                        const target = tab.dataset.target;
+                        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                        tab.classList.add('active');
+                        document.getElementById(target).classList.add('active');
+
+                        if (target === 'my-torrents') {
+                            this.loadMyTorrents();
+                        }
+                    });
+                });
+            }
+
+            setupEventListeners() {
+                document.getElementById('addButton').addEventListener('click', () => {
+                    const magnetInput = document.getElementById('magnetInput');
+                    const magnet = magnetInput.value.trim();
+
+                    if (magnet) {
+                        this.addDownload(magnet);
+                        magnetInput.value = '';
+                    }
+                });
+
+                document.getElementById('magnetInput').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        document.getElementById('addButton').click();
+                    }
+                });
+            }
+
+            async addDownload(magnet) {
+                const addFeedback = document.getElementById('addFeedback');
+                addFeedback.style.display = 'none';
+                addFeedback.classList.remove('success', 'error');
+            
+                try {
+                    const response = await fetch('/api/add_magnet', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ magnet }),
+                    });
+            
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        const errorMessage = errorData.error || 'Failed to add download';
+                        console.error(`Error adding download: ${errorMessage}`);
+                        addFeedback.textContent = `Error: ${errorMessage}`;
+                        addFeedback.classList.add('error');
+                        addFeedback.style.display = 'block';
+                        return;
+                    }
+            
+                    const data = await response.json();
+                    this.downloads.set(data.task_id, {
+                        magnet,
+                        status: 'initializing',
+                        progress: 0,
+                    });
+                    this.updateUI(); // Update UI immediately to show the new download
+            
+                    // Provide success feedback
+                    addFeedback.textContent = 'Download added successfully';
+                    addFeedback.classList.add('success');
+                    addFeedback.style.display = 'block';
+                } catch (error) {
+                    console.error('Error adding download:', error);
+                    addFeedback.textContent = 'An unexpected error occurred';
+                    addFeedback.classList.add('error');
+                    addFeedback.style.display = 'block';
+                }
+            }
+
+            async loadMyTorrents() {
+                const torrentsLoading = document.getElementById('torrentsLoading');
+                const torrentsList = document.getElementById('my-torrents-list');
+                torrentsList.innerHTML = '';
+                torrentsLoading.style.display = 'flex';
+
+                try {
+                    const response = await fetch('/api/my_torrents');
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Failed to load torrents');
+                    }
+
+                    this.myTorrents = data;
+                    this.updateTorrentsUI();
+                } catch (error) {
+                    console.error('Error loading torrents:', error);
+                    alert(`Error loading torrents: ${error.message}. Check your API key is configured correctly.`);
+                } finally {
+                    torrentsLoading.style.display = 'none';
+                }
+            }
+
+            async downloadTorrent(torrentId, torrentName, button) {
+                try {
+                    // Change button text and style
+                    button.textContent = 'Downloading...';
+                    button.disabled = true; // Optionally disable the button
+            
+                    const response = await fetch('/api/download_torrent', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ torrent_id: torrentId }),
+                    });
+            
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        const errorMessage = errorData.error || 'Failed to start download';
+                        console.error(`Error downloading torrent: ${errorMessage}`);
+                        alert(`Error downloading torrent: ${errorMessage}`);
+                        // Reset button state if request failed
+                        button.textContent = 'Download';
+                        button.disabled = false;
+                        return;
+                    }
+            
+                    const data = await response.json();
+            
+                    // Assuming the download task is immediately added to active downloads
+                    this.downloads.set(data.task_id, {
+                        torrentId,
+                        status: 'initializing',
+                        progress: 0,
+                        folder_name: torrentName, // Use torrent name for folder name
+                    });
+            
+                    this.updateUI();
+            
+                    // Provide feedback to the user
+                    alert('Download added successfully');
+                } catch (error) {
+                    console.error('Error downloading torrent:', error);
+                    alert('Error downloading torrent. See console for details.');
+                    // Reset button state in case of error
+                    button.textContent = 'Download';
+                    button.disabled = false;
+                }
+            }
+
+            updateTorrentsUI() {
+                const torrentsContainer = document.getElementById('my-torrents-list');
+                torrentsContainer.innerHTML = '';
+            
+                if (this.myTorrents.length === 0) {
+                    torrentsContainer.innerHTML = '<div class="no-torrents">No torrents found.</div>';
+                    return;
+                }
+            
+                const table = document.createElement('table');
+                const thead = document.createElement('thead');
+                const tbody = document.createElement('tbody');
+            
+                // Create table header
+                const headerRow = document.createElement('tr');
+                ['Name', 'Size', 'Status', 'Actions'].forEach(headerText => {
+                    const th = document.createElement('th');
+                    th.textContent = headerText;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+                table.appendChild(thead);
+            
+                // Create table rows for each torrent
+                this.myTorrents.forEach(torrent => {
+                    const tr = document.createElement('tr');
+            
+                    // Name
+                    const nameTd = document.createElement('td');
+                    nameTd.textContent = torrent.filename;
+                    tr.appendChild(nameTd);
+            
+                    // Size
+                    const sizeTd = document.createElement('td');
+                    sizeTd.textContent = (torrent.bytes / (1024 ** 3)).toFixed(2) + " GB";
+                    tr.appendChild(sizeTd);
+            
+                    // Status
+                    const statusTd = document.createElement('td');
+                    statusTd.textContent = torrent.status;
+                    tr.appendChild(statusTd);
+            
+                    // Actions
+                    const actionsTd = document.createElement('td');
+                    if (torrent.status === 'downloaded') {
+                        const downloadButton = document.createElement('button');
+                        downloadButton.className = 'button';
+                        downloadButton.textContent = 'Download';
+                        downloadButton.addEventListener('click', () => {
+                            this.downloadTorrent(torrent.id, torrent.filename, downloadButton);
+                        });
+                        actionsTd.appendChild(downloadButton);
+                    }
+                    tr.appendChild(actionsTd);
+            
+                    tbody.appendChild(tr);
+                });
+            
+                table.appendChild(tbody);
+                torrentsContainer.appendChild(table);
+            }
+
+            async pollStatus() {
+                // No need for polling if using SSE
+            }
+
+            startStatusPolling() {
+                // No need for polling if using SSE
+            }
+
+            updateUI() {
+                const downloadsContainer = document.getElementById('downloads');
+                downloadsContainer.innerHTML = '';
+            
+                // Convert this.downloads to an array, sort it, and then iterate
+                Array.from(this.downloads.entries())
+                    .sort((a, b) => {
+                        // Sort by status first: 'initializing' and 'downloading' at the top
+                        const statusOrder = { 'initializing': 0, 'downloading': 1, 'stopped': 2, 'completed': 3, 'error': 4 };
+                        const statusComparison = statusOrder[a[1].status] - statusOrder[b[1].status];
+                        if (statusComparison !== 0) return statusComparison;
+            
+                        // If statuses are the same, sort by creation time (newest first)
+                        return parseFloat(b[0]) - parseFloat(a[0]);
+                    })
+                    .forEach(([taskId, download]) => {
+                        const element = this.createDownloadElement(taskId, download);
+                        downloadsContainer.appendChild(element);
+                    });
+            }
+
+            createDownloadElement(taskId, download) {
+                const element = document.createElement('div');
+                element.className = 'download-item';
+                element.id = `download-item-${taskId}`; // Add an ID to the element for updates
+
+                const header = document.createElement('div');
+                header.className = 'download-header';
+            
+                const title = document.createElement('div');
+                title.className = 'download-title';
+                title.textContent = download.folder_name || download.magnet;
+            
+                const status = document.createElement('div');
+                status.className = 'download-status';
+            
+                if (download.rd_status && download.rd_status !== 'downloaded') {
+                    status.textContent = `${download.rd_status} (${download.rd_progress || '...' }%)`;
+                } else {
+                    status.textContent = `${download.status} ${
+                        download.progress ? `(${Math.round(download.progress)}%)` : ''
+                    }`;
+                }
+                
+                header.appendChild(title);
+                header.appendChild(status);
+            
+                const progress = document.createElement('div');
+                progress.className = 'progress';
+            
+                const progressBar = document.createElement('div');
+                progressBar.className = 'progress-bar';
+                
+                if (download.rd_status && download.rd_status !== 'downloaded') {
+                    progressBar.style.width = `${download.rd_progress || 0}%`;
+                } else {
+                    progressBar.style.width = `${download.progress || 0}%`;
+                }
+            
+                progress.appendChild(progressBar);
+            
+                const stats = document.createElement('div');
+                stats.className = 'stats';
+            
+                if (download.status === 'downloading'){
+                    stats.innerHTML = `
+                        <span>Size: ${(download.total_size / (1024 ** 3)).toFixed(2)} GB</span>
+                        <span>Speed: ${(download.download_speed / (1024 ** 2)).toFixed(2)} MB/s</span>
+                        <span>ETA: ${download.eta}</span>
+                    `;
+                }
+            
+                const controls = document.createElement('div');
+                controls.className = 'controls';
+            
+                const startButton = document.createElement('button');
+                startButton.className = 'button';
+                startButton.textContent = 'Start';
+                startButton.addEventListener('click', () => {
+                    this.controlDownload(taskId, 'start');
+                });
+            
+                const stopButton = document.createElement('button');
+                stopButton.className = 'button';
+                stopButton.textContent = 'Stop';
+                stopButton.addEventListener('click', () => {
+                    this.controlDownload(taskId, 'stop');
+                });
+            
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'button';
+                deleteButton.textContent = 'Delete';
+                deleteButton.addEventListener('click', () => {
+                    this.controlDownload(taskId, 'delete');
+                });
+            
+                if (download.status === 'downloading' || download.status === 'initializing') {
+                    startButton.disabled = true;
+                } else {
+                    stopButton.disabled = true;
+                }
+            
+                if (download.status !== 'error' && download.status !== 'completed' && download.status !== 'stopped') {
+                    deleteButton.disabled = true;
+                }
+            
+                controls.appendChild(startButton);
+                controls.appendChild(stopButton);
+                controls.appendChild(deleteButton);
+            
+                element.appendChild(header);
+                element.appendChild(stats);
+                element.appendChild(progress);
+                element.appendChild(controls);
+            
+                if (download.error) {
+                    const error = document.createElement('div');
+                    error.className = 'error';
+                    error.textContent = download.error;
+                    element.appendChild(error);
+                }
+            
+                if (download.files && download.files.length > 0) {
+                    const filesList = document.createElement('ul');
+                    filesList.className = 'files-list';
+            
+                    // Display only the first 5 file names
+                    const filesToDisplay = download.files.slice(0, 5);
+                    filesToDisplay.forEach(file => {
+                        const listItem = document.createElement('li');
+                        listItem.textContent = file.path.split('/').pop();
+                        filesList.appendChild(listItem);
+                    });
+            
+                    // If there are more than 5 files, display a message indicating the count
+                    if (download.files.length > 5) {
+                        const moreFilesItem = document.createElement('li');
+                        moreFilesItem.textContent = `+${download.files.length - 5} more files`;
+                        filesList.appendChild(moreFilesItem);
+                    }
+            
+                    element.appendChild(filesList);
+                }
+            
+                return element;
+            }
+
+            async controlDownload(taskId, action) {
+                try {
+                    const response = await fetch('/api/control', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ task_id: taskId, action }),
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Failed to control download');
+                    }
+
+                    if (action === 'delete') {
+                        // Remove the task from the downloads map
+                        this.downloads.delete(taskId);
+                        // Update the UI to reflect the changes
+                        this.updateUI();
+                    }
+                } catch (error) {
+                    console.error(`Error controlling download: ${error.message}`);
+                    alert(`Error controlling download: ${error.message}`);
+                }
+            }
+
+            setupEventSource() {
+                const eventSource = new EventSource('/stream-downloads');
+
+                eventSource.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.downloads.set(data.task_id, {
+                        ...this.downloads.get(data.task_id),
+                        ...data,
+                    });
+                    this.updateDownloadItem(data.task_id, data);
+                };
+
+                eventSource.onerror = (error) => {
+                    console.error('EventSource failed:', error);
+                };
+            }
+
+            updateDownloadItem(taskId, data) {
+                const downloadItem = document.getElementById(`download-item-${taskId}`);
+                if (!downloadItem) return;
+
+                // Update the status
+                const statusDiv = downloadItem.querySelector('.download-status');
+                if (statusDiv) {
+                    if (data.rd_status && data.rd_status !== 'downloaded') {
+                        statusDiv.textContent = `${data.rd_status} (${data.rd_progress || '...'}%)`;
+                    } else {
+                        statusDiv.textContent = `${data.status} ${data.progress ? `(${Math.round(data.progress)}%)` : ''}`;
+                    }
+                }
+
+                // Update the progress bar
+                const progressBar = downloadItem.querySelector('.progress-bar');
+                if (progressBar) {
+                    if (data.rd_status && data.rd_status !== 'downloaded') {
+                        progressBar.style.width = `${data.rd_progress || 0}%`;
+                    } else {
+                        progressBar.style.width = `${data.progress || 0}%`;
+                    }
+                }
+
+                // Update stats
+                const statsDiv = downloadItem.querySelector('.stats');
+                if (statsDiv && data.status === 'downloading') {
+                    statsDiv.innerHTML = `
+                        <span>Size: ${(data.total_size / (1024 ** 3)).toFixed(2)} GB</span>
+                        <span>Speed: ${(data.download_speed / (1024 ** 2)).toFixed(2)} MB/s</span>
+                        <span>ETA: ${data.eta}</span>
+                    `;
+                }
+
+                // Update the title with the torrent name
+                const titleDiv = downloadItem.querySelector('.download-title');
+                if (titleDiv) {
+                    titleDiv.textContent = data.folder_name || this.downloads.get(taskId).magnet;
+                }
+
+                // Update or add the error message if present
+                if (data.error) {
+                    let errorDiv = downloadItem.querySelector('.error');
+                    if (!errorDiv) {
+                        errorDiv = document.createElement('div');
+                        errorDiv.className = 'error';
+                        downloadItem.appendChild(errorDiv);
+                    }
+                    errorDiv.textContent = data.error;
+                }
+
+                // Update the files list if present
+                if (data.files) {
+                    let filesList = downloadItem.querySelector('.files-list');
+                    if (!filesList) {
+                        filesList = document.createElement('ul');
+                        filesList.className = 'files-list';
+                        downloadItem.appendChild(filesList);
+                    }
+                    filesList.innerHTML = ''; // Clear existing list
+
+                    // Display only the first 5 file names
+                    const filesToDisplay = data.files.slice(0, 5);
+                    filesToDisplay.forEach(file => {
+                        const listItem = document.createElement('li');
+                        listItem.textContent = file.path.split('/').pop();
+                        filesList.appendChild(listItem);
+                    });
+
+                    // If there are more than 5 files, display a message
+                    if (data.files.length > 5) {
+                        const moreFilesItem = document.createElement('li');
+                        moreFilesItem.textContent = `+${data.files.length - 5} more files`;
+                        filesList.appendChild(moreFilesItem);
+                    }
+                }
+            }
+        }
+
+        // Initialize the download manager
+        new DownloadManager();
+    </script>
+</body>
+</html>
