@@ -14,7 +14,7 @@ A simple web interface to a flask server which takes a magnet link to download a
 2. Clone this repository with Git & install requirements
   	1. `git clone https://github.com/KIRKR101/RMT-Debrid.git`
   	2. `cd RMT-Debrid`
-  	3. `pip install requirements.txt`
+  	3. `pip install -r requirements.txt`
 
 3. Rename the `.env.sample` to `.env`, and replace its contents with your actual [API key](https://real-debrid.com/apitoken) and download path. For Windows, use double backwards slashes, e.g. "C:\\\Users\\\user\\\Downloads".
      
