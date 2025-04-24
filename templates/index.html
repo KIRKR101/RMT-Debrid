@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RMT Debrid</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="stylesheet" href="/static/tailwind.css" />    
     <style>
       ::-webkit-scrollbar {
@@ -62,7 +63,7 @@
       <!-- Account Info -->
       <section
         id="account-info"
-        class="bg-white p-4 rounded-lg shadow-md mb-6 text-sm border-l-4 border-neutral-500"
+        class="bg-white p-4 rounded-lg shadow-inner mb-6 text-sm border-l-4 border-neutral-500"
       >
         <h2 class="font-semibold text-slate-600 mb-1">Account Status</h2>
         <p id="account-status" class="text-slate-500 truncate">
@@ -71,7 +72,7 @@
       </section>
 
       <!-- Add Download Form -->
-      <section class="bg-white p-6 rounded-lg shadow-md mb-8">
+      <section class="bg-white p-6 rounded-lg shadow-inner mb-8">
         <form
           id="add-download-form"
           class="flex flex-col sm:flex-row sm:items-end gap-4"
@@ -117,7 +118,7 @@
       </section>
 
       <!-- Download List -->
-      <section class="bg-slate-50 p-4 md:p-6 rounded-lg shadow-inner">
+      <section class="bg-white p-4 md:p-6 rounded-lg shadow-inner">
         <h2 class="text-xl font-semibold mb-4 text-slate-700">Downloads</h2>
         <div id="download-list" class="space-y-4">
           <p id="no-downloads" class="text-slate-500 text-center py-6">
@@ -390,7 +391,7 @@
 
           progressClasses = isPaused
             ? "bg-amber-400"
-            : "bg-gradient-to-r from-blue-500 to-neutral-500";
+            : "bg-blue-500";
           if (isPaused && !localSpeedInfo)
             localSpeedInfo = `<span class="text-xs text-amber-600">(Paused)</span>`; // Ensure paused state shown if no speed
         } else if (

@@ -1,6 +1,10 @@
-aiofiles==24.1.0
-fastapi==0.115.12
-httpx==0.28.1
-python-dotenv==1.1.0
-starlette==0.46.2
-uvicorn==0.34.2
+aiofiles
+fastapi
+httpx
+python-dotenv
+starlette
+uvicorn
+python-multipart
+jinja2
+websockets
+wsproto
