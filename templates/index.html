@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RMT Debrid</title>
+    <link rel="stylesheet" href="/static/tailwind.css" />    
+    <style>
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 10px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 10px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+
+      .spinner {
+        border: 3px solid rgba(209, 213, 219, 0.3); /* border-gray-300 opacity 30% */
+        border-top-color: #6366f1; /* border-neutral-500 */
+        border-radius: 50%;
+        width: 1rem; /* w-4 */
+        height: 1rem; /* h-4 */
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-slate-100 text-slate-800 min-h-screen">
+    <div class="container mx-auto p-4 md:p-8 max-w-5xl">
+      <header class="mb-8">
+        <h1 class="text-4xl font-bold text-center text-neutral-700">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="inline-block h-10 w-10 -mt-1 mr-2"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          RMT-Debrid
+        </h1>
+      </header>
+
+      <!-- Account Info -->
+      <section
+        id="account-info"
+        class="bg-white p-4 rounded-lg shadow-md mb-6 text-sm border-l-4 border-neutral-500"
+      >
+        <h2 class="font-semibold text-slate-600 mb-1">Account Status</h2>
+        <p id="account-status" class="text-slate-500 truncate">
+          Loading account info...
+        </p>
+      </section>
+
+      <!-- Add Download Form -->
+      <section class="bg-white p-6 rounded-lg shadow-md mb-8">
+        <form
+          id="add-download-form"
+          class="flex flex-col sm:flex-row sm:items-end gap-4"
+        >
+          <div class="flex-grow">
+            <label
+              for="link"
+              class="block text-sm font-medium text-slate-600 mb-1"
+              >Download Link or Magnet URI</label
+            >
+            <input
+              type="text"
+              id="link"
+              name="link"
+              required
+              placeholder="Enter http(s):// or magnet:?xt="
+              class="w-full px-3 py-2 border border-slate-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-neutral-500 focus:border-neutral-500 transition duration-150"
+            />
+          </div>
+          <button
+            type="submit"
+            id="add-button"
+            class="bg-neutral-600 hover:bg-neutral-700 text-white font-bold py-2 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-neutral-500 transition duration-150 ease-in-out whitespace-nowrap inline-flex items-center justify-center gap-2 disabled:opacity-75 disabled:cursor-not-allowed"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              class="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+            Add Download
+          </button>
+        </form>
+        <p id="form-message" class="text-sm mt-3 text-red-600 font-medium"></p>
+      </section>
+
+      <!-- Download List -->
+      <section class="bg-slate-50 p-4 md:p-6 rounded-lg shadow-inner">
+        <h2 class="text-xl font-semibold mb-4 text-slate-700">Downloads</h2>
+        <div id="download-list" class="space-y-4">
+          <p id="no-downloads" class="text-slate-500 text-center py-6">
+            No active downloads. Add one above!
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const addForm = document.getElementById("add-download-form");
+      const linkInput = document.getElementById("link");
+      const addButton = document.getElementById("add-button");
+      const formMessage = document.getElementById("form-message");
+      const downloadList = document.getElementById("download-list");
+      const noDownloadsMessage = document.getElementById("no-downloads");
+      const accountStatusEl = document.getElementById("account-status");
+
+      let socket;
+      let connectAttempts = 0;
+      const maxConnectAttempts = 5;
+
+      // --- SVG Icon Definitions ---
+      const ICONS = {
+        spinner: `<div class="spinner"></div>`, // Use div for spinner style
+        download: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>`,
+        pause: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // Pause Circle
+        resume: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // Play Circle
+        cancel: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>`, // X
+        clear: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>`, // Trash
+        completed: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // Check Circle
+        error: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2 2m2-2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // X Circle
+        cancelled: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>`, // Ban / Stop
+        pending: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // Clock
+        info: `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`, // Info Circle
+      };
+
+      function connectWebSocket() {
+        const wsProtocol =
+          window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        console.log(`Attempting to connect WebSocket: ${wsUrl}`);
+
+        socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+          console.log("WebSocket Connected");
+          formMessage.textContent = "";
+          connectAttempts = 0;
+        };
+        socket.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            if (message.type === "full_state") {
+              downloadList.innerHTML = "";
+              updateDownloadList(message.downloads || {});
+            } else if (message.type === "update") {
+              updateDownloadList({ [message.download.id]: message.download });
+            } else {
+              console.log("Received unknown message type:", message.type);
+            }
+          } catch (error) {
+            console.error(
+              "Failed to parse WebSocket message or update UI:",
+              error
+            );
+          }
+        };
+        socket.onerror = (error) => {
+          console.error("WebSocket Error:", error);
+          formMessage.textContent =
+            "WebSocket connection error. Real-time updates disabled.";
+        };
+        socket.onclose = (event) => {
+          console.log(
+            `WebSocket Closed. Code: ${event.code}, Reason: ${event.reason}. Clean close: ${event.wasClean}`
+          );
+          formMessage.textContent =
+            "WebSocket disconnected. Attempting to reconnect...";
+          socket = null;
+          connectAttempts++;
+          if (connectAttempts <= maxConnectAttempts) {
+            const delay = Math.pow(2, connectAttempts) * 1000;
+            console.log(
+              `Attempting reconnect #${connectAttempts} in ${delay / 1000}s...`
+            );
+            setTimeout(connectWebSocket, delay);
+          } else {
+            console.error(
+              `Max WebSocket reconnect attempts (${maxConnectAttempts}) reached.`
+            );
+            formMessage.textContent =
+              "WebSocket disconnected. Max reconnect attempts reached. Please refresh the page.";
+          }
+        };
+      }
+
+      function updateDownloadList(downloads) {
+        const hasDownloads = downloads && Object.keys(downloads).length > 0;
+
+        if (hasDownloads) {
+          noDownloadsMessage.style.display = "none";
+          Object.values(downloads).forEach((dl) => {
+            let item = document.getElementById(`dl-${dl.id}`);
+            if (!item) {
+              item = document.createElement("div");
+              item.id = `dl-${dl.id}`;
+              // Classes will be set by generateDownloadItemHTML
+              downloadList.appendChild(item);
+            }
+            // Render item content
+            item.outerHTML = generateDownloadItemHTML(dl);
+          });
+        } else {
+          if (downloads) {
+            noDownloadsMessage.style.display = "block";
+          }
+        }
+
+        // Cleanup
+        const currentIds = new Set(Object.keys(downloads));
+        const itemsToRemove = [];
+        for (const item of downloadList.children) {
+          // Check if it's a download item and not the placeholder
+          if (
+            item.id &&
+            item.id.startsWith("dl-") &&
+            !currentIds.has(item.id.substring(3))
+          ) {
+            itemsToRemove.push(item);
+          } else if (!item.id && item !== noDownloadsMessage) {
+            // Remove potential malformed items
+            itemsToRemove.push(item);
+          }
+        }
+        itemsToRemove.forEach((item) => item.remove());
+
+        if (
+          downloadList.children.length === 0 ||
+          (downloadList.children.length === 1 &&
+            downloadList.children[0] === noDownloadsMessage)
+        ) {
+          noDownloadsMessage.style.display = "block";
+        } else {
+          noDownloadsMessage.style.display = "none"; // Hide if items exist
+        }
+      }
+
+      function formatBytes(bytes, decimals = 2) {
+        if (!+bytes || typeof bytes !== "number" || bytes <= 0)
+          return "0 Bytes";
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+        const i = Math.max(0, Math.floor(Math.log(bytes) / Math.log(k)));
+        const unitIndex = Math.min(i, sizes.length - 1);
+        return `${parseFloat((bytes / Math.pow(k, unitIndex)).toFixed(dm))} ${
+          sizes[unitIndex]
+        }`;
+      }
+      function formatETA(seconds) {
+        if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0)
+          return "N/A";
+        if (seconds < 1) return "< 1s";
+        const d = Math.floor(seconds / (3600 * 24));
+        const h = Math.floor((seconds % (3600 * 24)) / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        let eta = "";
+        if (d > 0) eta += `${d}d `;
+        if (h > 0 || d > 0)
+          eta += `${String(h).padStart(d > 0 ? 2 : 1, "0")}h `;
+        if (m > 0 || h > 0 || d > 0)
+          eta += `${String(m).padStart(h > 0 || d > 0 ? 2 : 1, "0")}m `;
+        eta += `${String(s).padStart(2, "0")}s`;
+        return eta.trim();
+      }
+
+      function generateDownloadItemHTML(dl) {
+        // --- Determine states ---
+        const isFinalState = [
+          "completed",
+          "failed",
+          "cancelled",
+          "rd_error",
+        ].includes(dl.status);
+        const isDownloading = dl.status === "downloading";
+        const isPaused = dl.status === "paused";
+        const showSpinner = [
+          "starting",
+          "unrestricting",
+          "processing_torrent",
+          "waiting_rd",
+          "selecting_files",
+        ].includes(dl.status);
+
+        // --- Button visibility ---
+        const canPause = isDownloading;
+        const canResume = isPaused;
+        const canCancel = !isFinalState;
+        const canClear = isFinalState;
+
+        // --- Dynamic Classes & Content ---
+        let progressBar = "";
+        let statusIcon = "";
+        let statusText = dl.status.replace(/_/g, " ");
+        let statusClasses = "bg-gray-100 text-gray-600"; // Default/Pending
+        let progressValue = 0;
+        let progressClasses = "bg-slate-400"; // Default progress color
+
+        // RD Progress
+        const showRdInfo =
+          dl.type === "magnet" &&
+          ["processing_torrent", "waiting_rd"].includes(dl.status) &&
+          dl.rd_total_size_bytes > 0 &&
+          dl.progress >= 0; // Allow 100% RD progress display
+        let rdProgressInfo = "";
+        if (showRdInfo) {
+          const totalSize = dl.rd_total_size_bytes || 0;
+          const speedBps = dl.rd_speed_bps || 0;
+          const progressPercent = dl.progress || 0;
+          const downloadedSize = totalSize * (progressPercent / 100);
+          const remainingSize = Math.max(0, totalSize - downloadedSize);
+          const etaSeconds =
+            speedBps > 0 && remainingSize > 0
+              ? remainingSize / speedBps
+              : Infinity;
+          rdProgressInfo = `<p class="text-xs text-sky-700 mt-1" title="Real-Debrid Processing">RD: ${formatBytes(
+            downloadedSize
+          )} / ${formatBytes(totalSize)}${
+            speedBps > 0 ? ` | ${formatBytes(speedBps)}/s` : ""
+          }${
+            etaSeconds !== Infinity ? ` | ETA: ${formatETA(etaSeconds)}` : ""
+          }</p>`;
+          progressValue = progressPercent; // Use RD progress for bar if active
+          progressClasses = "bg-gradient-to-r from-sky-500 to-cyan-500"; // RD progress color
+        }
+
+        // Local Progress
+        let localProgressInfo = "";
+        let localSpeedInfo = "";
+        if (isDownloading || isPaused) {
+          const localProgressPercent = dl.progress || 0;
+          const totalMB = dl.size_mb || 0;
+          const speedMBps = dl.speed_mbps || 0;
+          const downloadedMB = totalMB * (localProgressPercent / 100);
+          const etaSeconds =
+            speedMBps > 0 && totalMB > 0 && !isPaused
+              ? (totalMB - downloadedMB) / speedMBps
+              : Infinity;
+          progressValue = localProgressPercent; // Override progress bar with local %
+
+          localProgressInfo = `<p class="text-xs ${
+            isPaused ? "text-amber-700" : "text-blue-700"
+          } mt-1 font-medium" title="${
+            isPaused ? "Download Paused" : "Downloading to PC"
+          }">Local: ${downloadedMB.toFixed(1)} MB / ${totalMB.toFixed(1)} MB${
+            isPaused ? " (Paused)" : ""
+          }</p>`;
+          if (speedMBps > 0 && !isPaused) {
+            localSpeedInfo = `<span class="text-xs text-blue-600 font-mono">(${speedMBps.toFixed(
+              1
+            )} MB/s)</span>`;
+          }
+          if (etaSeconds !== Infinity && !isPaused) {
+            localSpeedInfo += `<span class="text-xs text-slate-500 ml-2">ETA: ${formatETA(
+              etaSeconds
+            )}</span>`;
+          }
+
+          progressClasses = isPaused
+            ? "bg-amber-400"
+            : "bg-gradient-to-r from-blue-500 to-neutral-500";
+          if (isPaused && !localSpeedInfo)
+            localSpeedInfo = `<span class="text-xs text-amber-600">(Paused)</span>`; // Ensure paused state shown if no speed
+        } else if (
+          dl.status === "unrestricting" &&
+          dl.type === "magnet" &&
+          typeof dl.current_file_index === "number"
+        ) {
+          localProgressInfo = `<p class="text-xs text-orange-700 mt-1 font-medium">Preparing file ${
+            dl.current_file_index + 1
+          }/${dl.files.length}...</p>`;
+        }
+
+        // Status Badge Styling
+        if (showSpinner) {
+          statusIcon = ICONS.spinner;
+          statusClasses = "bg-orange-100 text-orange-700";
+        } else if (isDownloading) {
+          statusIcon = ICONS.download;
+          statusClasses = "bg-blue-100 text-blue-700";
+        } else if (isPaused) {
+          statusIcon = ICONS.pause;
+          statusClasses = "bg-yellow-100 text-yellow-700";
+        } else if (dl.status === "completed") {
+          statusIcon = ICONS.completed;
+          statusClasses = "bg-green-100 text-green-700";
+          progressValue = 100;
+          progressClasses = "bg-green-500";
+        } else if (dl.status === "failed" || dl.status === "rd_error") {
+          statusIcon = ICONS.error;
+          statusClasses = "bg-red-100 text-red-700";
+        } else if (dl.status === "cancelled") {
+          statusIcon = ICONS.cancelled;
+          statusClasses = "bg-slate-100 text-slate-600";
+        } else {
+          statusIcon = ICONS.pending;
+          statusClasses = "bg-slate-100 text-slate-500";
+        } // Pending
+
+        // Progress Bar HTML
+        progressBar = `
+                <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2 dark:bg-slate-700">
+                    <div class="${progressClasses} h-1.5 rounded-full transition-all duration-300 ease-linear" style="width: ${progressValue}%"></div>
+                </div>`;
+        
+        // Current File Info
+        let fileInfo = "";
+        const showFileInfo =
+          dl.type === "magnet" &&
+          ["unrestricting", "downloading", "paused"].includes(dl.status) &&
+          typeof dl.current_file_index === "number" &&
+          dl.files &&
+          dl.files.length > dl.current_file_index;
+        if (showFileInfo) {
+          const currentFile = dl.files[dl.current_file_index];
+          const totalFiles = dl.files.length;
+          const fileName = currentFile.name
+            ? currentFile.name.split("/").pop() || currentFile.name
+            : "File Info Unavailable";
+          fileInfo = `<p class="text-xs text-slate-600 mt-1 truncate" title="${fileName}">File ${
+            dl.current_file_index + 1
+          }/${totalFiles}: ${fileName}</p>`;
+        }
+
+        let sizeValue = "";
+        if (dl.type === "direct" && dl.size_mb > 0) {
+          sizeValue = `${dl.size_mb.toFixed(1)} MB`;
+        } else if (dl.type === "magnet" && dl.rd_total_size_bytes > 0) {
+          sizeValue = formatBytes(dl.rd_total_size_bytes, 1);
+        }
+
+        // Button Base Classes
+        const btnBase =
+          "px-2 py-1 text-xs font-medium rounded border transition duration-150 ease-in-out inline-flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed";
+        const btnPause = `${btnBase} border-yellow-400 text-yellow-700 bg-yellow-50 hover:bg-yellow-100 focus:ring-2 focus:ring-yellow-300 focus:outline-none`;
+        const btnResume = `${btnBase} border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 focus:ring-2 focus:ring-blue-300 focus:outline-none`;
+        const btnCancel = `${btnBase} border-orange-400 text-orange-700 bg-orange-50 hover:bg-orange-100 focus:ring-2 focus:ring-orange-300 focus:outline-none`;
+        const btnClear = `${btnBase} border-red-400 text-red-700 bg-red-50 hover:bg-red-100 focus:ring-2 focus:ring-red-300 focus:outline-none`;
+
+        // --- Assemble HTML ---
+        // Note: ${fileInfo} does not work, though it correctly displays the number of files and the first file. Can be added here when fixed.
+        return `
+                <div id="dl-${
+                  dl.id
+                }" class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-4 flex flex-col md:flex-row gap-4 items-start">
+                        <div class="flex-grow min-w-0 w-full md:w-auto">
+                            <p class="text-base font-semibold text-slate-800 truncate mb-1" title="${
+                              dl.name
+                            }">${dl.name}</p>
+                            <div class="flex flex-wrap gap-x-4 md:gap-x-6 gap-y-1 text-xs text-slate-500 mb-2">
+                                <span>Type: <p class="font-medium text-slate-600 capitalize">${dl.type}</p></span>
+                                <span>Added: <p class="font-medium text-slate-600">${
+                                  dl.added_time_str
+                                }</p></span>
+                                ${
+                                  sizeValue
+                                    ? `<span>Size: <p class="font-medium text-slate-600">${sizeValue}</p></span>`
+                                    : ""
+                                }
+                            </div>
+                            ${rdProgressInfo}
+                            ${localProgressInfo}
+                            <div class="mt-1 h-4">
+                                ${localSpeedInfo}
+                            </div>
+                         </div>
+
+                        <div class="flex-shrink-0 flex flex-col items-end gap-2 w-full md:w-auto md:min-w-[150px]">
+                             <span class="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClasses}" title="${statusText}">
+                                ${statusIcon}
+                                ${statusText}
+                            </span>
+                            <div class="flex gap-2 mt-1">
+                                ${
+                                  canPause
+                                    ? `<button onclick="pauseDownload('${dl.id}')" class="${btnPause}" title="Pause Download">${ICONS.pause} Pause</button>`
+                                    : ""
+                                }
+                                ${
+                                  canResume
+                                    ? `<button onclick="resumeDownload('${dl.id}')" class="${btnResume}" title="Resume Download">${ICONS.resume} Resume</button>`
+                                    : ""
+                                }
+                                ${
+                                  canCancel
+                                    ? `<button onclick="cancelDownload('${dl.id}')" class="${btnCancel}" title="Cancel Download">${ICONS.cancel} Cancel</button>`
+                                    : ""
+                                }
+                                ${
+                                  canClear
+                                    ? `<button onclick="clearDownload('${dl.id}')" class="${btnClear}" title="Clear from list">${ICONS.clear} Clear</button>`
+                                    : ""
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    ${progressBar}
+                    ${
+                      dl.error_message
+                        ? `<div class="p-3 text-xs text-red-700 bg-red-50 border-t border-red-200 break-words">${ICONS.info} <strong class="font-medium">Error:</strong> ${dl.error_message}</div>`
+                        : ""
+                    }
+                </div>
+            `;
+      }
+
+      // --- API Call Functions ---
+      async function pauseDownload(id) {
+        console.log(`Requesting pause for ${id}`);
+        try {
+          const response = await fetch(`/api/download/${id}/pause`, {
+            method: "POST",
+          });
+          const result = await response.json();
+          if (!response.ok)
+            throw new Error(
+              result.detail || `Server responded with status ${response.status}`
+            );
+          console.log(`Pause request sent for ${id}:`, result.message);
+        } catch (error) {
+          console.error(`Error pausing download ${id}:`, error);
+          alert(`Error pausing download: ${error.message}`);
+        }
+      }
+      async function resumeDownload(id) {
+        console.log(`Requesting resume for ${id}`);
+        try {
+          const response = await fetch(`/api/download/${id}/resume`, {
+            method: "POST",
+          });
+          const result = await response.json();
+          if (!response.ok)
+            throw new Error(
+              result.detail || `Server responded with status ${response.status}`
+            );
+          console.log(`Resume request sent for ${id}:`, result.message);
+        } catch (error) {
+          console.error(`Error resuming download ${id}:`, error);
+          alert(`Error resuming download: ${error.message}`);
+        }
+      }
+      async function cancelDownload(id) {
+        if (!confirm(`Are you sure you want to cancel download ${id}?`)) return;
+        try {
+          const response = await fetch(`/api/download/${id}/cancel`, {
+            method: "POST",
+          });
+          const result = await response.json();
+          if (!response.ok)
+            throw new Error(result.detail || "Failed to cancel download");
+          console.log(`Cancel request sent for ${id}:`, result.message);
+        } catch (error) {
+          console.error(`Error cancelling download ${id}:`, error);
+          alert(`Error cancelling download: ${error.message}`);
+        }
+      }
+      async function clearDownload(id) {
+        try {
+          const response = await fetch(`/api/download/${id}`, {
+            method: "DELETE",
+          });
+          let resultText = await response.text();
+          let result = null;
+          try {
+            result = JSON.parse(resultText);
+          } catch (e) {
+            /* Ignore */
+          }
+          if (!response.ok)
+            throw new Error(
+              result?.detail || resultText || "Failed to clear download"
+            );
+          console.log(`Cleared download ${id}:`, result?.message || "Success");
+          const item = document.getElementById(`dl-${id}`);
+          if (item) item.remove();
+          if (
+            downloadList.children.length === 0 ||
+            (downloadList.children.length === 1 &&
+              downloadList.children[0] === noDownloadsMessage)
+          ) {
+            noDownloadsMessage.style.display = "block";
+          }
+        } catch (error) {
+          console.error(`Error clearing download ${id}:`, error);
+          alert(`Error clearing download: ${error.message}`);
+        }
+      }
+      async function fetchAccountInfo() {
+        try {
+          const response = await fetch("/api/account/info");
+          if (!response.ok)
+            throw new Error(`HTTP error! status: ${response.status}`);
+          const data = await response.json();
+          let statusText = "Could not load account details.";
+          if (data.user && !data.user.error) {
+            const user = data.user;
+            const expirationDate = user.expiration
+              ? new Date(user.expiration).toLocaleDateString()
+              : "N/A";
+            statusText = `Username: <strong class="text-slate-700">${user.username}</strong> | Type: <strong class="text-slate-700">${user.type}</strong> | Expires: <strong class="text-slate-700">${expirationDate}</strong> | Fidelity Points: <strong class="text-slate-700">${user.points}</strong>`;
+          } else {
+            statusText = `User details: ${data.user?.error || "Unavailable"}`;
+          }
+          if (
+            data.traffic &&
+            !data.traffic.error &&
+            typeof data.traffic === "object"
+          ) {
+            console.log("RD Traffic Info:", data.traffic);
+          } else if (data.traffic?.error) {
+            statusText += ` | Traffic details: ${data.traffic.error}`;
+          }
+          accountStatusEl.innerHTML =
+            statusText; /* Use innerHTML for strong tags */
+        } catch (error) {
+          console.error("Error fetching account info:", error);
+          accountStatusEl.textContent = "Failed to load account info.";
+        }
+      }
+
+      // --- Event Listeners ---
+      addForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const link = linkInput.value.trim();
+        if (!link) {
+          formMessage.textContent = "Please enter a link or magnet URI.";
+          return;
+        }
+
+        // Disable button and show loading state
+        addButton.disabled = true;
+        addButton.innerHTML = `
+                <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Adding...`;
+        formMessage.textContent = "";
+
+        const formData = new FormData();
+        formData.append("link", link);
+
+        try {
+          const response = await fetch("/api/download", {
+            method: "POST",
+            body: formData,
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.detail || "Failed to add download");
+          }
+          console.log("Download added:", result);
+          linkInput.value = ""; // Clear input
+          formMessage.textContent = ""; // Clear any previous errors
+        } catch (error) {
+          console.error("Error adding download:", error);
+          formMessage.textContent = `Error: ${error.message}`;
+        } finally {
+          addButton.disabled = false;
+          addButton.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add Download`;
+        }
+      });
+
+      // --- Initial Load ---
+      connectWebSocket();
+      fetchAccountInfo();
+    </script>
+  </body>
+</html>
