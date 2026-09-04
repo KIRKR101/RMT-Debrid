@@ -1,1 +1,16 @@
 .env
+settings.json
+downloads/
+*.db
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# SvelteKit build output served by FastAPI
+static/_app/
+static/index.html
+static/fonts/
+static/favicon.svg
+static/robots.txt

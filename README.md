@@ -33,6 +33,22 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
     *   Create a file named `.env` in the project's root directory, or rename `.env.sample`
     *   Add your Real-Debrid API key and desired download path:
 
+    The optional **Settings** panel in the web UI can update the Real-Debrid key,
+    download folder, and concurrency later. Changes are stored in `settings.json`
+    (which is intentionally ignored by git) and take effect without restarting.
+
+## Frontend development
+
+The UI is a SvelteKit + TypeScript app in `frontend/`, using shadcn-svelte components. FastAPI serves its production build from `static/`.
+
+```bash
+cd frontend
+bun install
+bun run dev
+```
+
+Build the frontend for FastAPI with `bun run build` from `frontend/`.
+
 
 ## Usage
 
@@ -43,8 +59,10 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
         ```
     *   **For production (recommended):**
         ```bash
-        uvicorn main:app
+        npm start
         ```
+
+        This builds the SvelteKit frontend into `static/` and starts the FastAPI server.
 
 2.  **Access the Web UI**
     *   Open your web browser and navigate to `http://<SERVER_HOST>:<SERVER_PORT>` (e.g., `http://127.0.0.1:8000` by default).
@@ -72,4 +90,6 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
 
 ## Notes
 
-*   **State Management:** The current download list and state are stored **in memory**. If you restart the Python application, the list of active/paused/completed downloads will be lost.
+*   **State Management:** Download state is stored in `downloads.db`; interrupted
+    downloads are restored when the application starts. Runtime settings are stored
+    in the local, git-ignored `settings.json` file.

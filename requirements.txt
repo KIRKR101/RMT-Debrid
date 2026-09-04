@@ -5,6 +5,7 @@ python-dotenv
 starlette
 uvicorn
 python-multipart
-jinja2
 websockets
 wsproto
+sqlmodel
+tenacity
