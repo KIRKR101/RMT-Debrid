@@ -2,7 +2,7 @@
 	"name": "rmt-debrid",
 	"private": true,
 	"scripts": {
-		"build:frontend": "npm --prefix frontend run build",
-		"start": "npm run build:frontend && python main.py"
+		"build:frontend": "bun run --cwd frontend build",
+		"start": "bun run build:frontend && py -3 main.py"
 	}
 }
