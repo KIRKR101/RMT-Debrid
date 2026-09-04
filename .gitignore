@@ -1,5 +1,6 @@
 .env
 settings.json
+storage.json
 downloads/
 *.db
 __pycache__/

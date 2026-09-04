@@ -3,14 +3,19 @@
 	import {
 		CircleAlert,
 		Clipboard,
+		Box,
 		Inbox,
 		Link2,
 		Loader2,
+		Database,
+		HardDrive,
 		Pause,
 		Play,
 		RotateCcw,
+		RefreshCw,
 		Save,
 		Search,
+		Server,
 		Settings,
 		Trash2,
 		Check,
@@ -75,6 +80,24 @@
 		rd_api_key_hint: string;
 	};
 
+	type StorageData = {
+		total_bytes: number;
+		used_bytes: number;
+		free_bytes: number;
+		used_percent: number;
+		volumes: StorageVolume[];
+	};
+
+	type StorageVolume = {
+		path: string;
+		name: string;
+		filesystem: string;
+		total_bytes: number;
+		used_bytes: number;
+		free_bytes: number;
+		used_percent: number;
+	};
+
 	let downloads = $state<Record<string, Download>>({});
 	let account = $state<Account | null>(null);
 	let accountError = $state('');
@@ -89,6 +112,9 @@
 	let link = $state('');
 	let apiKey = $state('');
 	let settingsMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
+	let storage = $state<StorageData | null>(null);
+	let storageError = $state('');
+	let refreshingStorage = $state(false);
 	let formMessage = $state('');
 
 	let adding = $state(false);
@@ -96,6 +122,7 @@
 	let clearingCompleted = $state(false);
 	let initialLoading = $state(true);
 	let detailsDialogOpen = $state(false);
+	let storageDialogOpen = $state(false);
 	let cancelDialogOpen = $state(false);
 	let pendingCancelId = $state<string | null>(null);
 	let actionInFlight = $state<string | null>(null);
@@ -268,6 +295,23 @@
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'Settings unavailable');
 		}
+	}
+
+	async function loadStorage(refresh = false) {
+		storageError = '';
+		if (refresh) refreshingStorage = true;
+		try {
+			storage = await request(`/api/storage${refresh ? '?refresh=true' : ''}`);
+		} catch (error) {
+			storageError = error instanceof Error ? error.message : 'Storage unavailable';
+		} finally {
+			refreshingStorage = false;
+		}
+	}
+
+	async function openStorage() {
+		storageDialogOpen = true;
+		await loadStorage();
 	}
 
 	async function addDownload() {
@@ -453,13 +497,7 @@
 
 				<div class="flex items-center gap-1">
 					{#if account}
-						<Button
-							variant="ghost"
-							size="sm"
-							class="h-9 gap-2 px-2"
-							onclick={() => openDetails()}
-							aria-label="Open account details"
-						>
+						<div class="flex h-9 items-center gap-2 px-2" aria-label="Account details">
 							<span class="hidden text-right leading-tight sm:block">
 								<span class="block text-xs font-semibold capitalize">{account.type}</span>
 								<span class="block font-mono text-[10px] text-muted-foreground">expires {date(account.expiration)}</span>
@@ -467,10 +505,13 @@
 							<span class="grid size-8 place-items-center rounded-full border border-border bg-muted font-mono text-[10px] text-muted-foreground">
 								{account.username.slice(0, 2).toUpperCase()}
 							</span>
-						</Button>
+						</div>
 					{:else if accountError}
 						<span class="hidden text-xs text-muted-foreground sm:block">{accountError}</span>
 					{/if}
+					<Button variant="ghost" size="icon-sm" aria-label="Open storage diagnostics" onclick={openStorage}>
+						<Server class="size-4" />
+					</Button>
 					<Button variant="ghost" size="icon-sm" aria-label="Open settings" onclick={() => openDetails()}>
 						<Settings class="size-4" />
 					</Button>
@@ -726,6 +767,44 @@
 
 	</main>
 </Tooltip.Provider>
+
+<Dialog.Root bind:open={storageDialogOpen}>
+	<Dialog.Content class="gap-0 p-0 sm:max-w-[560px]">
+		<div class="border-b border-border px-6 pt-5 pr-14 pb-4">
+			<Dialog.Header class="gap-1">
+				<div class="flex items-center gap-2"><Dialog.Title>Storage</Dialog.Title><Button variant="ghost" size="icon-sm" class="size-7" onclick={() => loadStorage(true)} disabled={refreshingStorage} aria-label="Refresh storage details"><RefreshCw class={`size-3.5 ${refreshingStorage ? 'animate-spin' : ''}`} /></Button></div>
+			</Dialog.Header>
+		</div>
+
+		<div class="max-h-[70vh] overflow-y-auto bg-muted/20 px-6 py-5">
+			{#if storageError}
+				<Alert.Root variant="destructive"><Alert.Description>{storageError}</Alert.Description></Alert.Root>
+			{:else if storage}
+				<div class="grid gap-4">
+					<div class="grid grid-cols-4 gap-2 rounded-lg border border-border bg-background p-3 text-center">
+						<div><strong class="block text-base tabular-nums">{storage.used_percent}%</strong><span class="text-[10px] uppercase text-muted-foreground">used</span></div>
+						<div><strong class="block text-base tabular-nums">{storage.volumes.length}</strong><span class="text-xs text-muted-foreground">Volumes</span></div>
+						<div><strong class="block text-base tabular-nums">{formatBytes(storage.total_bytes)}</strong><span class="text-xs text-muted-foreground">Total capacity</span></div>
+						<div><strong class="block text-base tabular-nums">{formatBytes(storage.free_bytes)}</strong><span class="text-xs text-muted-foreground">Free overall</span></div>
+					</div>
+					{#each storage.volumes as volume}
+						<div class="rounded-lg border border-border bg-background p-4">
+							<div class="mb-3 flex items-center gap-3"><span class="grid size-9 place-items-center rounded-lg bg-muted">
+								{#if volume.total_bytes < 1024 ** 4}<Box class="size-4 text-muted-foreground" />
+								{:else if volume.total_bytes < 4 * 1024 ** 4}<HardDrive class="size-4 text-muted-foreground" />
+								{:else}<Database class="size-4 text-muted-foreground" />{/if}
+							</span><div class="min-w-0"><strong class="block truncate text-sm">{volume.name}</strong><span class="font-mono text-xs text-muted-foreground">{volume.path} · {volume.filesystem}</span></div></div>
+							<div class="h-2 overflow-hidden rounded-full bg-muted"><div class="h-full rounded-full bg-foreground" style={`width: ${Math.min(volume.used_percent, 100)}%`}></div></div>
+							<div class="mt-2 flex justify-between text-xs text-muted-foreground"><span>{formatBytes(volume.used_bytes)} used</span><span>{formatBytes(volume.free_bytes)} free</span></div>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-12 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Loading storage…</div>
+			{/if}
+		</div>
+	</Dialog.Content>
+</Dialog.Root>
 
 <Dialog.Root bind:open={detailsDialogOpen}>
 	<Dialog.Content class="gap-0 p-0 sm:max-w-[440px]">

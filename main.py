@@ -1,7 +1,15 @@
 import logging
 import uuid
 import asyncio
-from typing import List, Optional, Dict
+import ctypes
+from ctypes import wintypes
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 
 import httpx
@@ -63,6 +71,117 @@ async def send_task_update(task: models.DownloadTask):
 
 # Set the callback in manager
 manager.update_callback = send_task_update
+
+STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", "./storage.json")
+
+def _load_storage_cache() -> Dict:
+    try:
+        with open(STORAGE_CACHE_FILE, encoding="utf-8") as file:
+            value = json.load(file)
+            return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+def _save_storage_cache(cache: Dict) -> None:
+    try:
+        with open(STORAGE_CACHE_FILE, "w", encoding="utf-8") as file:
+            json.dump(cache, file, indent=2)
+    except OSError:
+        logging.warning("Could not save storage metadata cache")
+
+def _command(args: List[str]) -> str:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=2, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+def _windows_volume(mountpoint: str) -> Tuple[str, str, str]:
+    get_volume_information = ctypes.WinDLL("kernel32", use_last_error=True).GetVolumeInformationW
+    get_volume_information.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD,
+    ]
+    get_volume_information.restype = wintypes.BOOL
+    get_drive_type = ctypes.windll.kernel32.GetDriveTypeW
+    get_drive_type.argtypes = [wintypes.LPCWSTR]
+    get_drive_type.restype = wintypes.UINT
+    volume_name = ctypes.create_unicode_buffer(261)
+    filesystem = ctypes.create_unicode_buffer(32)
+    serial, maximum_component, flags = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+    try:
+        available = get_volume_information(
+            mountpoint, volume_name, len(volume_name), ctypes.byref(serial),
+            ctypes.byref(maximum_component), ctypes.byref(flags), filesystem, len(filesystem)
+        )
+    except OSError:
+        available = False
+    drive_type = {
+        2: "Removable", 3: "Fixed disk", 4: "Network", 5: "Optical", 6: "RAM disk"
+    }.get(get_drive_type(mountpoint), "Local volume")
+    if drive_type == "Fixed disk" and mountpoint[:1].isalpha():
+        media_type = _command([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            f"(Get-Partition -DriveLetter '{mountpoint[0]}' | Get-Disk).MediaType"
+        ])
+        if media_type in {"SSD", "HDD"}:
+            drive_type = media_type
+        else:
+            drive_type = "Unknown"
+    return volume_name.value or mountpoint, filesystem.value or "Unknown", drive_type
+
+def _darwin_volume(mountpoint: str) -> Tuple[str, str, str]:
+    try:
+        data = subprocess.run(
+            ["diskutil", "info", "-plist", mountpoint], capture_output=True, timeout=2, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        data = b""
+    if data:
+        import plistlib
+        try:
+            info = plistlib.loads(data)
+            name = info.get("VolumeName") or info.get("MediaName") or mountpoint
+            filesystem = info.get("FileSystemType", "Unknown")
+            drive_type = "SSD" if info.get("SolidState") else "HDD"
+            if info.get("RemovableMedia"):
+                drive_type = "Removable"
+            return name, filesystem, drive_type
+        except (plistlib.InvalidFileException, ValueError):
+            pass
+    return mountpoint, "Unknown", "Local volume"
+
+def _linux_volume(mountpoint: str) -> Tuple[str, str, str]:
+    mount_info = _command(["findmnt", "-no", "SOURCE,FSTYPE", mountpoint]).split(maxsplit=1)
+    source = mount_info[0] if mount_info else ""
+    filesystem = mount_info[1] if len(mount_info) > 1 else "Unknown"
+    details = dict(re.findall(r'(\w+)="([^"]*)"', _command(["lsblk", "-P", "-n", "-o", "LABEL,MODEL,ROTA,RM,TYPE", source])))
+    name = details.get("LABEL") or details.get("MODEL") or source or mountpoint
+    if filesystem.lower() in {"cifs", "nfs", "nfs4", "smbfs"}:
+        drive_type = "Network"
+    elif details.get("TYPE") == "rom":
+        drive_type = "Optical"
+    elif details.get("RM") == "1":
+        drive_type = "Removable"
+    elif details.get("ROTA") == "0":
+        drive_type = "SSD"
+    elif details.get("ROTA") == "1":
+        drive_type = "HDD"
+    else:
+        drive_type = "Local volume"
+    return name, filesystem, drive_type
+
+def volume_metadata(mountpoint: str) -> Tuple[str, str, str]:
+    if os.name == "nt":
+        return _windows_volume(mountpoint)
+    if sys.platform == "darwin":
+        return _darwin_volume(mountpoint)
+    return _linux_volume(mountpoint)
+
+def volume_mountpoints() -> List[str]:
+    if os.name == "nt":
+        return os.listdrives() if hasattr(os, "listdrives") else []
+    return [line.split()[-1] for line in _command(["df", "-P", "-l"]).splitlines()[1:] if line.split()]
 
 class SettingsUpdate(BaseModel):
     rd_api_key: Optional[str] = Field(default=None, max_length=256)
@@ -139,6 +258,55 @@ async def get_account_overall(auth=Depends(verify_api_key)):
 @app.get("/api/settings")
 async def get_settings(auth=Depends(verify_api_key)):
     return config.public_settings()
+
+@app.get("/api/storage")
+async def get_storage(refresh: bool = False, auth=Depends(verify_api_key)):
+    volumes = []
+    seen = set()
+    cache = _load_storage_cache()
+    cache_changed = False
+    mountpoints = volume_mountpoints()
+    for mountpoint in mountpoints:
+        if not mountpoint or mountpoint in seen:
+            continue
+        try:
+            usage = shutil.disk_usage(mountpoint)
+        except OSError:
+            continue
+        seen.add(mountpoint)
+        if refresh or mountpoint not in cache:
+            name, filesystem, drive_type = volume_metadata(mountpoint)
+            cache[mountpoint] = {"name": name, "filesystem": filesystem, "type": drive_type}
+            cache_changed = True
+        else:
+            metadata = cache[mountpoint]
+            name = metadata.get("name", mountpoint)
+            filesystem = metadata.get("filesystem", "Unknown")
+            drive_type = metadata.get("type", "Local volume")
+        volumes.append({
+            "path": mountpoint,
+            "name": name,
+            "filesystem": filesystem,
+            "type": drive_type,
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "used_percent": round(usage.used / usage.total * 100, 1) if usage.total else 0,
+        })
+    if cache_changed:
+        _save_storage_cache(cache)
+    if not volumes:
+        raise HTTPException(status_code=503, detail="No readable storage volumes found")
+    total = sum(volume["total_bytes"] for volume in volumes)
+    used = sum(volume["used_bytes"] for volume in volumes)
+    free = sum(volume["free_bytes"] for volume in volumes)
+    return {
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "used_percent": round(used / total * 100, 1) if total else 0,
+        "volumes": volumes,
+    }
 
 @app.put("/api/settings")
 async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)):
