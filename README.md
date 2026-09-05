@@ -23,6 +23,16 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
     pip install -r requirements.txt
     ```
 
+    On macOS/Linux, a local virtual environment is recommended:
+
+    ```bash
+    python3 -m venv .venv
+    .venv/bin/pip install -r requirements.txt
+    ```
+
+    `bun run start` automatically uses `.venv` when it exists. Set
+    `PYTHON_BIN` if Python is installed elsewhere.
+
     or manually,
 
     ```bash
@@ -32,6 +42,9 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
 3.  **Configure Environment Variables**
     *   Create a file named `.env` in the project's root directory, or rename `.env.sample`
     *   Add your Real-Debrid API key and desired download path:
+
+    *   Optionally set `APP_PASSWORD` to protect the web UI with a shared
+        household login. The legacy `API_KEY` header remains supported.
 
     The optional **Settings** panel in the web UI can update the Real-Debrid key,
     download folder, and concurrency later. Changes are stored in `settings.json`
@@ -86,6 +99,9 @@ Build the frontend for FastAPI with `bun run build` from `frontend/`.
 *   Pause and Resume local file downloads.
 *   Cancel ongoing downloads (both RD processing and local transfer).
 *   Clear completed, failed, or cancelled downloads from the list.
+*   Select individual files from a torrent before starting it.
+*   Remove queue entries safely while preserving local files by default.
+*   Protect the web UI with an optional shared household login.
 *   Responsive UI built with Tailwind CSS.
 
 ## Notes
@@ -93,3 +109,14 @@ Build the frontend for FastAPI with `bun run build` from `frontend/`.
 *   **State Management:** Download state is stored in `downloads.db`; interrupted
     downloads are restored when the application starts. Runtime settings are stored
     in the local, git-ignored `settings.json` file.
+
+## Authentication and API
+
+Set `APP_PASSWORD` to require the shared household login. The browser never
+receives the Real-Debrid API token. Legacy clients may continue to use
+`X-API-Key` when `API_KEY` is configured.
+
+Useful application endpoints include `GET /api/health`, the authentication
+endpoints under `/api/auth`, and torrent file selection through
+`GET`/`POST /api/download/{id}/files`. Explicit local-file deletion uses
+`DELETE /api/download/{id}?delete_local=true`.

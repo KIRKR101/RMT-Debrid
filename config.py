@@ -33,7 +33,9 @@ MAX_CONCURRENT_DOWNLOADS = int(_setting("MAX_CONCURRENT", "3"))
 CHUNK_SIZE = 1024 * 1024  # 1MB chunk size as requested
 
 # Basic Auth (Optional but recommended)
-API_KEY = os.getenv("API_KEY") # If set, requires header X-API-Key
+API_KEY = os.getenv("API_KEY") # Legacy header secret
+# Shared household password. API_KEY remains a backwards-compatible fallback.
+APP_PASSWORD = os.getenv("APP_PASSWORD") or API_KEY
 
 if not RD_API_KEY:
     raise ValueError("RD_API_KEY not found in environment variables or .env file")
@@ -51,6 +53,7 @@ def public_settings():
         "rd_api_key_hint": f"{'•' * max(0, len(token) - 4)}{token[-4:]}" if token else "",
         "download_folder": DOWNLOAD_FOLDER,
         "max_concurrent_downloads": MAX_CONCURRENT_DOWNLOADS,
+        "auth_configured": bool(APP_PASSWORD),
     }
 
 def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_downloads=None):

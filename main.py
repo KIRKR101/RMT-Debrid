@@ -1,6 +1,8 @@
 import logging
 import uuid
 import asyncio
+import secrets
+import time
 import ctypes
 from ctypes import wintypes
 import json
@@ -13,7 +15,7 @@ from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Request, Response
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,7 +25,7 @@ import config
 import models
 import database
 import rd_api
-from downloader import manager, sanitize_filename
+from downloader import manager, sanitize_filename, delete_local_artifacts
 
 # --- WebSocket & Update Logic ---
 active_connections: List[WebSocket] = []
@@ -95,6 +97,19 @@ def _command(args: List[str]) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
 
+
+def _format_filesystem(value: object) -> str:
+    normalized = str(value or "Unknown").replace("Apple_", "").replace("_", " ").strip().lower()
+    return {
+        "apfs": "APFS",
+        "hfs plus": "HFS+",
+        "hfs": "HFS",
+        "exfat": "exFAT",
+        "ntfs": "NTFS",
+        "fat32": "FAT32",
+    }.get(normalized, normalized)
+
+
 def _windows_volume(mountpoint: str) -> Tuple[str, str, str]:
     get_volume_information = ctypes.WinDLL("kernel32", use_last_error=True).GetVolumeInformationW
     get_volume_information.argtypes = [
@@ -131,6 +146,7 @@ def _windows_volume(mountpoint: str) -> Tuple[str, str, str]:
     return volume_name.value or mountpoint, filesystem.value or "Unknown", drive_type
 
 def _darwin_volume(mountpoint: str) -> Tuple[str, str, str]:
+    info = {}
     try:
         data = subprocess.run(
             ["diskutil", "info", "-plist", mountpoint], capture_output=True, timeout=2, check=True
@@ -141,15 +157,44 @@ def _darwin_volume(mountpoint: str) -> Tuple[str, str, str]:
         import plistlib
         try:
             info = plistlib.loads(data)
-            name = info.get("VolumeName") or info.get("MediaName") or mountpoint
-            filesystem = info.get("FileSystemType", "Unknown")
-            drive_type = "SSD" if info.get("SolidState") else "HDD"
-            if info.get("RemovableMedia"):
-                drive_type = "Removable"
-            return name, filesystem, drive_type
         except (plistlib.InvalidFileException, ValueError):
-            pass
-    return mountpoint, "Unknown", "Local volume"
+            info = {}
+
+    name = info.get("VolumeName") or info.get("MediaName") or mountpoint
+    filesystem_value = (
+        info.get("FileSystemType") or info.get("FilesystemType") or
+        info.get("FileSystemPersonality") or info.get("FilesystemName") or
+        info.get("Type") or info.get("Content")
+    )
+    drive_type = "SSD" if info.get("SolidState") else "HDD"
+    if info.get("RemovableMedia"):
+        drive_type = "Removable"
+
+    if not filesystem_value:
+        try:
+            text_info = subprocess.run(
+                ["diskutil", "info", mountpoint], capture_output=True, text=True,
+                timeout=2, check=True
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            text_info = ""
+        for line in text_info.splitlines():
+            key, separator, value = line.partition(":")
+            normalized_key = key.strip().lower()
+            if not separator:
+                continue
+            if normalized_key in {"volume name", "device / media name"} and name == mountpoint:
+                name = value.strip() or name
+            if normalized_key in {
+                "file system personality", "filesystem personality", "file system type",
+                "filesystem type", "type (bundle)", "content",
+            }:
+                filesystem_value = value.strip()
+                if filesystem_value:
+                    break
+
+    filesystem = _format_filesystem(filesystem_value)
+    return name, filesystem, drive_type
 
 def _linux_volume(mountpoint: str) -> Tuple[str, str, str]:
     mount_info = _command(["findmnt", "-no", "SOURCE,FSTYPE", mountpoint]).split(maxsplit=1)
@@ -181,17 +226,69 @@ def volume_metadata(mountpoint: str) -> Tuple[str, str, str]:
 def volume_mountpoints() -> List[str]:
     if os.name == "nt":
         return os.listdrives() if hasattr(os, "listdrives") else []
-    return [line.split()[-1] for line in _command(["df", "-P", "-l"]).splitlines()[1:] if line.split()]
+    mountpoints = [line.split()[-1] for line in _command(["df", "-P", "-l"]).splitlines()[1:] if line.split()]
+    if sys.platform != "darwin":
+        return mountpoints
+
+    # macOS exposes APFS's system/helper volumes as separate mount points even
+    # though they share the same container accounting. Counting them inflates
+    # totals and makes every helper volume appear to have the root's usage.
+    auxiliary_prefixes = (
+        "/System/Volumes/VM",
+        "/System/Volumes/Preboot",
+        "/System/Volumes/Update",
+        "/System/Volumes/xarts",
+        "/System/Volumes/iSCPreboot",
+        "/System/Volumes/Hardware",
+    )
+    unique = []
+    seen_usage = set()
+    for mountpoint in mountpoints:
+        if mountpoint.startswith(auxiliary_prefixes):
+            continue
+        try:
+            usage = shutil.disk_usage(mountpoint)
+            usage_key = (usage.total, usage.used, usage.free)
+        except OSError:
+            continue
+        if usage_key in seen_usage:
+            continue
+        seen_usage.add(usage_key)
+        unique.append(mountpoint)
+    return unique
 
 class SettingsUpdate(BaseModel):
     rd_api_key: Optional[str] = Field(default=None, max_length=256)
     download_folder: Optional[str] = Field(default=None, max_length=1024)
     max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
 
+
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class FileSelection(BaseModel):
+    file_ids: List[int] = Field(min_length=1, max_length=10000)
+
+
+AUTH_COOKIE = "rmt_session"
+SESSION_TTL = 60 * 60 * 24 * 30
+sessions: Dict[str, float] = {}
+
 # --- Auth Dependency ---
-async def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if config.API_KEY and x_api_key != config.API_KEY:
-         raise HTTPException(status_code=403, detail="Forbidden: Invalid API Key")
+async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(None)):
+    """Authenticate browser sessions, while retaining legacy API-key clients."""
+    if not config.APP_PASSWORD:
+        return
+    session = request.cookies.get(AUTH_COOKIE)
+    now = time.time()
+    if session and sessions.get(session, 0) > now:
+        return
+    if session:
+        sessions.pop(session, None)
+    if config.API_KEY and x_api_key == config.API_KEY:
+        return
+    raise HTTPException(status_code=401, detail="Authentication required")
 
 # --- Lifespan ---
 @asynccontextmanager
@@ -222,7 +319,7 @@ async def lifespan(app: FastAPI):
             task.status = "pending"
             database.save_task(task)
 
-        if task.status in ["pending", "downloading", "unrestricting", "processing_torrent", "rd_downloading", "waiting_rd", "starting"]:
+        if task.status in ["pending", "downloading", "unrestricting", "processing_torrent", "rd_downloading", "waiting_rd", "starting", "selecting_files"]:
             # If it was interrupted, we might want to restart/resume
             # For now, let's just make it possible to restart manually or resume if simple
             # Actually, let's mark it as pending and start if it was active
@@ -249,6 +346,44 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def read_root():
     return FileResponse("static/index.html")
 
+
+@app.post("/api/auth/login")
+async def login(credentials: LoginRequest, request: Request, response: Response):
+    if not config.APP_PASSWORD:
+        return {"authenticated": True, "auth_configured": False}
+    if not secrets.compare_digest(credentials.password, config.APP_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    token = secrets.token_urlsafe(32)
+    sessions[token] = time.time() + SESSION_TTL
+    response.set_cookie(AUTH_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", secure=request.url.scheme == "https")
+    return {"authenticated": True, "auth_configured": True}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response):
+    sessions.pop(request.cookies.get(AUTH_COOKIE), None)
+    response.delete_cookie(AUTH_COOKIE)
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/session")
+async def auth_session(request: Request):
+    if not config.APP_PASSWORD:
+        return {"authenticated": True, "auth_configured": False}
+    token = request.cookies.get(AUTH_COOKIE)
+    authenticated = bool(token and sessions.get(token, 0) > time.time())
+    return {"authenticated": authenticated, "auth_configured": True}
+
+
+@app.get("/api/health")
+async def health():
+    try:
+        database.get_all_tasks()
+        disk = shutil.disk_usage(config.DOWNLOAD_FOLDER)
+        return {"status": "ok", "database": "ok", "download_folder": "ok", "free_bytes": disk.free}
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 @app.get("/api/account/info")
 async def get_account_overall(auth=Depends(verify_api_key)):
     user_info = await rd_api.rd_request("/user")
@@ -274,14 +409,15 @@ async def get_storage(refresh: bool = False, auth=Depends(verify_api_key)):
         except OSError:
             continue
         seen.add(mountpoint)
-        if refresh or mountpoint not in cache:
+        metadata = cache.get(mountpoint, {})
+        cached_filesystem = str(metadata.get("filesystem", "")).strip().lower()
+        if refresh or mountpoint not in cache or cached_filesystem in {"", "unknown", "n/a"}:
             name, filesystem, drive_type = volume_metadata(mountpoint)
             cache[mountpoint] = {"name": name, "filesystem": filesystem, "type": drive_type}
             cache_changed = True
         else:
-            metadata = cache[mountpoint]
             name = metadata.get("name", mountpoint)
-            filesystem = metadata.get("filesystem", "Unknown")
+            filesystem = _format_filesystem(metadata.get("filesystem", "Unknown"))
             drive_type = metadata.get("type", "Local volume")
         volumes.append({
             "path": mountpoint,
@@ -328,8 +464,11 @@ async def add_new_download(link: str = Form(...), auth=Depends(verify_api_key)):
     if not link:
         raise HTTPException(status_code=400, detail="Link cannot be empty")
 
+    if not re.match(r"^(magnet:\?.+|https?://.+)$", link, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Only magnet and HTTP(S) links are supported")
+
     task_id = str(uuid.uuid4())
-    download_type = "magnet" if link.startswith("magnet:") or link.endswith(".torrent") else "direct"
+    download_type = "magnet" if link.lower().startswith("magnet:") else "direct"
 
     task = models.DownloadTask(
         id=task_id,
@@ -354,6 +493,28 @@ async def add_new_download(link: str = Form(...), auth=Depends(verify_api_key)):
 
     return {"status": "accepted", "id": task_id}
 
+
+@app.get("/api/download/{download_id}/files")
+async def get_download_files(download_id: str, auth=Depends(verify_api_key)):
+    task = manager.get_task(download_id) or database.get_task(download_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Download not found")
+    if task.type != "magnet":
+        raise HTTPException(status_code=400, detail="File selection is only available for torrents")
+    return {"id": task.id, "status": task.status, "files": task.files_json or []}
+
+
+@app.post("/api/download/{download_id}/files")
+async def select_download_files(download_id: str, selection: FileSelection, auth=Depends(verify_api_key)):
+    task = manager.get_task(download_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Download not found")
+    if task.status not in ("selecting_files", "starting", "waiting_rd"):
+        raise HTTPException(status_code=409, detail="Torrent is not awaiting file selection")
+    if not await manager.select_torrent_files(download_id, selection.file_ids):
+        raise HTTPException(status_code=400, detail="Invalid file selection or Real-Debrid rejected the request")
+    return {"success": True, "id": download_id}
+
 @app.post("/api/download/{download_id}/pause")
 async def pause_download(download_id: str, auth=Depends(verify_api_key)):
     if not manager.get_task(download_id):
@@ -376,13 +537,15 @@ async def cancel_download(download_id: str, auth=Depends(verify_api_key)):
     return {"message": "Cancel request sent"}
 
 @app.delete("/api/download/{download_id}")
-async def delete_download(download_id: str, auth=Depends(verify_api_key)):
+async def delete_download(download_id: str, delete_local: bool = False, auth=Depends(verify_api_key)):
     # Stop and fully await a running task before deleting its database row.  The
     # downloader persists its final cancellation state, so deleting first can
     # otherwise allow that final save to recreate a cancelled download.
     if not database.get_task(download_id):
         raise HTTPException(status_code=404, detail="Task not found")
     await manager.cancel_task(download_id)
+    remote_error = await manager.cleanup_remote(download_id)
+    local_error = delete_local_artifacts(manager.get_task(download_id) or database.get_task(download_id)) if delete_local else None
 
     # Remove from DB
     if database.delete_task_db(download_id):
@@ -390,7 +553,8 @@ async def delete_download(download_id: str, auth=Depends(verify_api_key)):
         manager.tasks.pop(download_id, None)
         manager.runtime_states.pop(download_id, None)
         await broadcast_state_update()
-        return {"success": True}
+        warnings = [error for error in (remote_error, local_error) if error]
+        return {"success": True, "warnings": warnings}
 
     raise HTTPException(status_code=404, detail="Task not found")
 
@@ -398,8 +562,11 @@ async def delete_download(download_id: str, auth=Depends(verify_api_key)):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    if config.API_KEY and websocket.headers.get("x-api-key") != config.API_KEY:
-        await websocket.close(code=1008, reason="Forbidden: Invalid API Key")
+    session = websocket.cookies.get(AUTH_COOKIE)
+    session_valid = bool(session and sessions.get(session, 0) > time.time())
+    legacy_valid = bool(config.API_KEY and websocket.headers.get("x-api-key") == config.API_KEY)
+    if config.APP_PASSWORD and not (session_valid or legacy_valid):
+        await websocket.close(code=1008, reason="Authentication required")
         return
     await websocket.accept()
     async with state_lock:
