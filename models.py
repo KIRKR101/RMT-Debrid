@@ -34,6 +34,9 @@ class DownloadTask(SQLModel, table=True):
     seeders: Optional[int] = None
     rd_status: Optional[str] = None
     error_code: Optional[int] = None
+    retry_count: int = 0
+    last_retry_time: Optional[float] = None
+    cleanup_error: Optional[str] = None
 
     def to_dict(self):
         """Converts the task to a dictionary for API/WebSocket transmission."""

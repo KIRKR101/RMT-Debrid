@@ -23,6 +23,9 @@ def create_db_and_tables():
                 "seeders": "INTEGER",
                 "rd_status": "VARCHAR",
                 "error_code": "INTEGER",
+                "retry_count": "INTEGER NOT NULL DEFAULT 0",
+                "last_retry_time": "FLOAT",
+                "cleanup_error": "VARCHAR",
             }.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE downloadtask ADD COLUMN {name} {definition}"))

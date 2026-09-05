@@ -8,6 +8,8 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+test-results/
+.DS_Store
 
 # SvelteKit build output served by FastAPI
 static/_app/

@@ -1,6 +1,6 @@
 import logging
 import httpx
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import config
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -47,8 +47,8 @@ async def rd_request(endpoint: str, method: str = 'GET', params: Optional[Dict] 
 
         response.raise_for_status()
 
-        if response.status_code == 204:
-             return {"success": True, "status_code": 204}
+        if response.status_code in (202, 204):
+             return {"success": True, "status_code": response.status_code}
 
         try:
             json_response = response.json()
@@ -95,21 +95,18 @@ async def unrestrict_link(link: str) -> Optional[Dict]:
         return response if isinstance(response, dict) else None
 
 async def add_magnet(magnet_uri: str) -> Optional[str]:
-    """Adds a magnet link to RD downloads and attempts to select files."""
+    """Adds a magnet and returns its torrent ID.
+
+    File selection is performed separately once torrent metadata is available.
+    """
     logging.info(f"Adding magnet link: {magnet_uri[:70]}...")
     global last_error
     last_error = None
     response = await rd_request("/torrents/addMagnet", method='POST', data={'magnet': magnet_uri})
     if response and isinstance(response, dict) and 'id' in response and 'error' not in response:
         torrent_id = response['id']
-        logging.info(f"Magnet link added successfully. Torrent ID: {torrent_id}. Selecting all files...")
-        select_response = await rd_request(f"/torrents/selectFiles/{torrent_id}", method='POST', data={'files': 'all'})
-        if select_response and isinstance(select_response, dict) and select_response.get("success") and select_response.get("status_code") == 204:
-             logging.info(f"Successfully selected all files for torrent ID: {torrent_id}")
-             return torrent_id
-        else:
-             logging.warning(f"[{torrent_id}] Failed to automatically select files. Magnet *was* successfully added.")
-             return torrent_id
+        logging.info(f"Magnet link added successfully. Torrent ID: {torrent_id}.")
+        return torrent_id
     else:
         last_error = response if isinstance(response, dict) else {"error": "Unknown Real-Debrid error"}
         logging.error(f"Failed to add magnet link.")
@@ -118,6 +115,17 @@ async def add_magnet(magnet_uri: str) -> Optional[str]:
 async def get_torrent_info(torrent_id: str) -> Optional[Dict]:
     """Gets information about a torrent on RD."""
     return await rd_request(f"/torrents/info/{torrent_id}")
+
+async def select_torrent_files(torrent_id: str, file_ids: List[int]) -> bool:
+    """Select torrent file IDs and start the torrent."""
+    if not file_ids:
+        return False
+    response = await rd_request(
+        f"/torrents/selectFiles/{torrent_id}",
+        method='POST',
+        data={'files': ','.join(str(file_id) for file_id in file_ids)},
+    )
+    return bool(response and response.get("success") and response.get("status_code") in (202, 204))
 
 async def delete_torrent(torrent_id: str) -> bool:
     """Deletes a torrent from Real-Debrid."""

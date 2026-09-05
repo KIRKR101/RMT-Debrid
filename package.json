@@ -3,6 +3,8 @@
 	"private": true,
 	"scripts": {
 		"build:frontend": "bun run --cwd frontend build",
-		"start": "bun run build:frontend && py -3 main.py"
+		"check:frontend": "bun run --cwd frontend check",
+		"test:backend": "bun start-backend.js -m unittest discover -s tests -v",
+		"start": "bun run build:frontend && bun start-backend.js"
 	}
 }

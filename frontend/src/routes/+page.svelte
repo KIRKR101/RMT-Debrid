@@ -59,8 +59,10 @@
 	};
 
 	type FileEntry = {
+		id?: number;
 		name?: string;
 		size?: number;
+		selected?: number;
 		progress?: number;
 		speed_mbps?: number;
 		status?: string;
@@ -101,6 +103,8 @@
 	let downloads = $state<Record<string, Download>>({});
 	let account = $state<Account | null>(null);
 	let accountError = $state('');
+	let accountMenuOpen = $state(false);
+	let accountMenuElement = $state<HTMLDivElement | undefined>(undefined);
 
 	let settings = $state<SettingsData>({
 		download_folder: '',
@@ -127,6 +131,19 @@
 	let pendingCancelId = $state<string | null>(null);
 	let actionInFlight = $state<string | null>(null);
 	let expandedDownloads = $state<Record<string, boolean>>({});
+	let authenticated = $state(false);
+	let authChecked = $state(false);
+	let password = $state('');
+	let loginError = $state('');
+	let loggingIn = $state(false);
+	let selectionDialogOpen = $state(false);
+	let selectionDownload = $state<Download | null>(null);
+	let selectedFileIds = $state<number[]>([]);
+	let loadingSelection = $state(false);
+	let submittingSelection = $state(false);
+	let deleteDialogOpen = $state(false);
+	let pendingDeleteId = $state<string | null>(null);
+	let deleteLocalFiles = $state(false);
 
 	let socket: WebSocket | null = null;
 	let reconnectAttempts = 0;
@@ -168,6 +185,13 @@
 
 	function showSuccess(message: string) {
 		toast.success(message);
+	}
+
+	function closeAccountMenuOnOutsideClick(event: PointerEvent) {
+		const target = event.target;
+		if (accountMenuOpen && accountMenuElement && target instanceof Node && !accountMenuElement.contains(target)) {
+			accountMenuOpen = false;
+		}
 	}
 
 	function formatBytes(bytes: number, decimals = 1) {
@@ -245,11 +269,43 @@
 	async function request(path: string, init: RequestInit = {}) {
 		const response = await fetch(path, init);
 		const data = await response.json().catch(() => ({}));
-		if (!response.ok) throw new Error(data.detail || 'Request failed');
+		if (!response.ok) {
+			if (response.status === 401) authenticated = false;
+			throw new Error(data.detail || 'Request failed');
+		}
 		return data;
 	}
 
+	async function login() {
+		if (!password || loggingIn) return;
+		loggingIn = true;
+		loginError = '';
+		try {
+			await request('/api/auth/login', {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ password })
+			});
+			authenticated = true;
+			password = '';
+			connectWebSocket();
+			fetchAccount();
+			fetchSettings();
+		} catch (error) {
+			loginError = error instanceof Error ? error.message : 'Login failed';
+		} finally {
+			loggingIn = false;
+		}
+	}
+
+	async function logout() {
+		await request('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+		socket?.close();
+		accountMenuOpen = false;
+		authenticated = false;
+	}
+
 	function connectWebSocket() {
+		if (!authenticated) return;
 		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 		socket = new WebSocket(`${protocol}//${location.host}/ws`);
 
@@ -262,8 +318,13 @@
 			if (data.type === 'full_state') {
 				downloads = data.downloads;
 				initialLoading = false;
+				const pendingSelection = (Object.values(data.downloads) as Download[]).find((download) => download.status === 'selecting_files');
+				if (pendingSelection && !selectionDialogOpen) void openSelection(pendingSelection);
 			}
-			if (data.type === 'update') downloads[data.download.id] = data.download;
+			if (data.type === 'update') {
+				downloads[data.download.id] = data.download;
+				if (data.download.status === 'selecting_files' && !selectionDialogOpen) void openSelection(data.download);
+			}
 		};
 		socket.onclose = () => {
 			socket = null;
@@ -330,6 +391,47 @@
 		}
 	}
 
+	async function openSelection(download: Download) {
+		selectionDownload = download;
+		selectionDialogOpen = true;
+		loadingSelection = true;
+		try {
+			const data = await request(`/api/download/${download.id}/files`);
+			selectionDownload = { ...download, files: data.files ?? [] };
+			selectedFileIds = (data.files ?? []).filter((file: FileEntry) => file.selected).map((file: FileEntry) => file.id).filter((id: number | undefined): id is number => id != null);
+		} catch (error) {
+			showError(error instanceof Error ? error.message : 'Could not load torrent files');
+			selectionDialogOpen = false;
+		} finally {
+			loadingSelection = false;
+		}
+	}
+
+	function toggleFile(id?: number) {
+		if (id == null) return;
+		selectedFileIds = selectedFileIds.includes(id)
+			? selectedFileIds.filter((value) => value !== id)
+			: [...selectedFileIds, id];
+	}
+
+	async function submitSelection() {
+		if (!selectionDownload || !selectedFileIds.length || submittingSelection) return;
+		submittingSelection = true;
+		try {
+			await request(`/api/download/${selectionDownload.id}/files`, {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ file_ids: selectedFileIds })
+			});
+			selectionDownload = { ...selectionDownload, status: 'starting' };
+			selectionDialogOpen = false;
+			showSuccess('Torrent selection saved.');
+		} catch (error) {
+			showError(error instanceof Error ? error.message : 'Could not select files');
+		} finally {
+			submittingSelection = false;
+		}
+	}
+
 	async function pasteLink() {
 		try {
 			const text = await navigator.clipboard.readText();
@@ -352,6 +454,7 @@
 		actionInFlight = `${id}:${action}`;
 		try {
 			await request(`/api/download/${id}/${action}`, { method: 'POST' });
+			showSuccess(action === 'pause' ? 'Download paused.' : action === 'resume' ? 'Download resumed.' : 'Download cancelled.');
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'Action failed');
 		} finally {
@@ -369,9 +472,9 @@
 		return download.total_files > 1;
 	}
 
-	function currentProgress(download: Download) {
-		if (!isMultipart(download)) return download.progress;
-		return Math.max(0, Math.min(100, download.progress * download.total_files - download.completed_files * 100));
+	function showFileProgress(download: Download) {
+		const visibleStatuses = ['pending', 'starting', 'processing_torrent', 'waiting_rd', 'rd_downloading', 'unrestricting', 'downloading', 'paused', 'completed', 'failed', 'cancelled'];
+		return visibleStatuses.includes(download.status) && (download.status === 'rd_downloading' || Boolean(download.output_path));
 	}
 
 	function toggleExpanded(id: string) {
@@ -388,7 +491,8 @@
 
 	function overallSummary(download: Download) {
 		if (!isMultipart(download)) return '1 file';
-		return `${download.completed_files} completed · ${download.total_files} total`;
+		if (download.status === 'rd_downloading') return `${download.total_files} total`;
+		return `${download.completed_files}/${download.total_files} completed`;
 	}
 
 	function errorLabel(download: Download) {
@@ -407,13 +511,27 @@
 		return path ? path.replaceAll('\\', '/') : '';
 	}
 
-	async function clearDownload(id: string) {
+	async function clearDownload(id: string, deleteLocal = false) {
 		try {
-			await request(`/api/download/${id}`, { method: 'DELETE' });
+			const data = await request(`/api/download/${id}${deleteLocal ? '?delete_local=true' : ''}`, { method: 'DELETE' });
 			delete downloads[id];
+			if (data.warnings?.length) showError(data.warnings.join(' '));
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'Delete failed');
 		}
+	}
+
+	function requestDelete(id: string) {
+		pendingDeleteId = id;
+		deleteLocalFiles = false;
+		deleteDialogOpen = true;
+	}
+
+	async function confirmDelete() {
+		if (!pendingDeleteId) return;
+		await clearDownload(pendingDeleteId, deleteLocalFiles);
+		deleteDialogOpen = false;
+		pendingDeleteId = null;
 	}
 
 	async function clearCompleted() {
@@ -470,12 +588,24 @@
 	}
 
 	onMount(() => {
-		connectWebSocket();
-		fetchAccount();
-		fetchSettings();
-		const timer = setInterval(fetchAccount, 300000);
+		let timer: ReturnType<typeof setInterval> | undefined;
+		document.addEventListener('pointerdown', closeAccountMenuOnOutsideClick);
+		request('/api/auth/session').then((data) => {
+			authenticated = data.authenticated;
+			authChecked = true;
+			if (authenticated) {
+				connectWebSocket();
+				fetchAccount();
+				fetchSettings();
+				timer = setInterval(fetchAccount, 300000);
+			}
+		}).catch(() => {
+			authChecked = true;
+			loginError = 'Unable to contact the server.';
+		});
 		return () => {
-			clearInterval(timer);
+			if (timer) clearInterval(timer);
+			document.removeEventListener('pointerdown', closeAccountMenuOnOutsideClick);
 			socket?.close();
 		};
 	});
@@ -486,7 +616,8 @@
 	<meta name="description" content="Real-Debrid download manager." />
 </svelte:head>
 
-<Tooltip.Provider>
+{#if authChecked && authenticated}
+	<Tooltip.Provider>
 	<main class="min-h-screen bg-background text-foreground">
 		<header class="border-b border-border">
 			<div class="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-8">
@@ -496,15 +627,29 @@
 				</a>
 
 				<div class="flex items-center gap-1">
-					{#if account}
-						<div class="flex h-9 items-center gap-2 px-2" aria-label="Account details">
-							<span class="hidden text-right leading-tight sm:block">
-								<span class="block text-xs font-semibold capitalize">{account.type}</span>
-								<span class="block font-mono text-[10px] text-muted-foreground">expires {date(account.expiration)}</span>
-							</span>
-							<span class="grid size-8 place-items-center rounded-full border border-border bg-muted font-mono text-[10px] text-muted-foreground">
-								{account.username.slice(0, 2).toUpperCase()}
-							</span>
+			{#if account}
+						<div class="relative" bind:this={accountMenuElement}>
+							<button
+								type="button"
+								class="flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-left transition hover:bg-muted"
+								aria-label="Open account menu"
+								aria-haspopup="menu"
+								aria-expanded={accountMenuOpen}
+								onclick={() => (accountMenuOpen = !accountMenuOpen)}
+							>
+								<span class="hidden leading-tight sm:block">
+									<span class="block text-xs font-semibold capitalize">{account.type}</span>
+									<span class="block font-mono text-[10px] text-muted-foreground">expires {date(account.expiration)}</span>
+								</span>
+								<span class="grid size-8 place-items-center rounded-full border border-border bg-muted font-mono text-[10px] text-muted-foreground">
+									{account.username.slice(0, 2).toUpperCase()}
+								</span>
+							</button>
+							{#if accountMenuOpen}
+								<div class="absolute top-11 right-0 z-50 min-w-28 rounded-md border border-border bg-card p-1 shadow-xl" role="menu" aria-label="Account menu">
+									<button type="button" class="flex w-full cursor-pointer items-center rounded px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" role="menuitem" onclick={logout}>Sign out</button>
+								</div>
+							{/if}
 						</div>
 					{:else if accountError}
 						<span class="hidden text-xs text-muted-foreground sm:block">{accountError}</span>
@@ -626,7 +771,7 @@
 									<li class="px-3 py-2.5">
 										<div class="flex items-start gap-3">
 											<div class="mt-0.5 flex w-5 shrink-0 items-center">
-												{#if isMultipart(download)}
+										{#if showFileProgress(download) && isMultipart(download)}
 													<button type="button" class="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label={`${expandedDownloads[download.id] ? 'Collapse' : 'Expand'} file list`} aria-expanded={expandedDownloads[download.id] ?? false} onclick={() => toggleExpanded(download.id)}>
 															<ChevronRight class={`size-3.5 transition-transform ${expandedDownloads[download.id] ? 'rotate-90' : ''}`} />
 													</button>
@@ -659,31 +804,17 @@
 															<Tooltip.Root>
 																<Tooltip.Trigger>
 																	{#snippet child({ props })}
-															<Button {...props} variant="ghost" size="icon-sm" aria-label="Remove download" onclick={() => clearDownload(download.id)}><Trash2 class="size-3.5" /></Button>
+									<Button {...props} variant="ghost" size="icon-sm" aria-label="Remove download" onclick={() => requestDelete(download.id)}><Trash2 class="size-3.5" /></Button>
 																	{/snippet}
 																</Tooltip.Trigger>
 																<Tooltip.Content>Remove</Tooltip.Content>
 															</Tooltip.Root>
-														{:else}
-															{#if download.status === 'downloading'}
-																<Tooltip.Root>
-																	<Tooltip.Trigger>
-																		{#snippet child({ props })}
-															<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Pause download" onclick={() => downloadAction(download.id, 'pause')}><Pause class="size-3.5" /></Button>
-																		{/snippet}
-																	</Tooltip.Trigger>
-																	<Tooltip.Content>Pause</Tooltip.Content>
-																</Tooltip.Root>
-															{:else if download.status === 'paused'}
-																<Tooltip.Root>
-																	<Tooltip.Trigger>
-																		{#snippet child({ props })}
-															<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Resume download" onclick={() => downloadAction(download.id, 'resume')}><Play class="size-3.5" /></Button>
-																		{/snippet}
-																	</Tooltip.Trigger>
-																	<Tooltip.Content>Resume</Tooltip.Content>
-																</Tooltip.Root>
-															{/if}
+								{:else}
+									{#if download.status === 'downloading'}
+											<Button variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Pause download" onclick={() => downloadAction(download.id, 'pause')}><Pause class="size-3.5" /></Button>
+									{:else if download.status === 'paused'}
+											<Button variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Resume download" onclick={() => downloadAction(download.id, 'resume')}><Play class="size-3.5" /></Button>
+									{/if}
 															<Tooltip.Root>
 																<Tooltip.Trigger>
 																	{#snippet child({ props })}
@@ -715,39 +846,35 @@
 														{/if}
 														<strong class="font-mono text-xs text-foreground">{download.progress.toFixed(0)}%</strong>
 													</div>
-													<div class="mt-1.5 flex items-center gap-2.5">
-														<Progress value={download.progress} max={100} class={`h-1 flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
-													</div>
-													{#if isMultipart(download)}
-														{#if expandedDownloads[download.id]}
-														<div class="mt-3 flex items-end justify-between gap-3">
-															<div class="min-w-0">
-																<p class="text-[11px] font-semibold tracking-wide text-foreground uppercase">Current file</p>
-																<p class="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={download.current_file_name ?? ''}>{download.current_file_name ?? 'Preparing next file'} · {formatMb(download.current_file_size_mb)}</p>
-															</div>
-															<strong class="font-mono text-xs text-foreground">{currentProgress(download).toFixed(0)}%</strong>
-														</div>
-														<div class="mt-1.5 flex items-center gap-2.5">
-															<Progress value={currentProgress(download)} max={100} class={`h-1 flex-1 ${barClass(download.status)}`} aria-label={`${download.current_file_name ?? download.name} progress`} />
-														</div>
-														<div class="mt-3 grid gap-1.5 rounded border border-border/70 bg-muted/15 p-2">
-															{#each download.files ?? [] as file, index}
-																<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-[10px]">
-																	<div class="flex min-w-0 items-center gap-1.5">
-																		<span class={`size-1.5 shrink-0 rounded-full ${file.status === 'completed' ? 'bg-emerald-400' : file.status === 'downloading' ? 'bg-sky-400' : 'bg-muted-foreground/40'}`}></span>
-																		<span class="truncate font-mono text-muted-foreground" title={file.name}>{index + 1}. {fileName(file)}</span>
-																	</div>
-																	<span class="font-mono text-muted-foreground">{fileSize(file)} · {(file.progress ?? 0).toFixed(0)}%{#if file.speed_mbps && file.speed_mbps > 0} · {file.speed_mbps.toFixed(1)} MB/s{/if}</span>
-																	<Progress value={file.progress ?? 0} max={100} class={`col-span-2 h-1 ${barClass(file.status ?? download.status)}`} aria-label={`${fileName(file)} progress`} />
-																</div>
-															{/each}
-														</div>
+								<div class="mt-1.5 flex items-center gap-2.5">
+									<Progress value={download.progress} max={100} class={`h-1 flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
+								</div>
+								{#if showFileProgress(download) && isMultipart(download)}
+																{#if expandedDownloads[download.id]}
+																<div class="mt-3 grid gap-1.5 rounded border border-border/70 bg-muted/15 p-2">
+											{#each download.files ?? [] as file, index}
+												<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-[10px]">
+													<div class="flex min-w-0 items-center gap-1.5">
+														{#if download.status !== 'rd_downloading'}
+															<span class={`size-1.5 shrink-0 rounded-full ${file.status === 'completed' ? 'bg-emerald-400' : file.status === 'downloading' ? 'bg-sky-400' : 'bg-muted-foreground/40'}`}></span>
 														{/if}
+														<span class="truncate font-mono text-muted-foreground" title={file.name}>{index + 1}. {fileName(file)}</span>
+													</div>
+													<span class="font-mono text-muted-foreground">{fileSize(file)}{#if download.status !== 'rd_downloading'} · {(file.progress ?? 0).toFixed(0)}%{#if file.speed_mbps && file.speed_mbps > 0} · {file.speed_mbps.toFixed(1)} MB/s{/if}{/if}</span>
+													{#if download.status !== 'rd_downloading'}
+														<Progress value={file.progress ?? 0} max={100} class={`col-span-2 h-1 ${barClass(file.status ?? download.status)}`} aria-label={`${fileName(file)} progress`} />
 													{/if}
+												</div>
+											{/each}
+																	</div>
+																	{/if}
+										{/if}
+										{#if download.output_path}
 											<div class="mt-3 flex min-w-0 items-center gap-1.5 border-t border-border/60 pt-2 font-mono text-[10px]">
-												<span class="shrink-0 text-muted-foreground">Saved to:</span>
-												{#if download.output_path}<p class="min-w-0 truncate text-foreground" title={download.output_path}>{pathLabel(download.output_path)}</p>{:else}<p class="text-muted-foreground">Choosing destination…</p>{/if}
+												<span class="shrink-0 text-muted-foreground">{download.status === 'completed' ? 'Saved to:' : 'Saving to:'}</span>
+												<p class="min-w-0 truncate text-foreground" title={download.output_path}>{pathLabel(download.output_path)}</p>
 											</div>
+										{/if}
 
 													{#if download.error_message && download.status !== 'cancelled'}
 															<Alert.Root variant="destructive" class="mt-2">
@@ -766,8 +893,6 @@
 		</div>
 
 	</main>
-</Tooltip.Provider>
-
 <Dialog.Root bind:open={storageDialogOpen}>
 	<Dialog.Content class="gap-0 p-0 sm:max-w-[560px]">
 		<div class="border-b border-border px-6 pt-5 pr-14 pb-4">
@@ -805,6 +930,8 @@
 		</div>
 	</Dialog.Content>
 </Dialog.Root>
+
+
 
 <Dialog.Root bind:open={detailsDialogOpen}>
 	<Dialog.Content class="gap-0 p-0 sm:max-w-[440px]">
@@ -962,3 +1089,78 @@
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
+
+	<Dialog.Root bind:open={selectionDialogOpen} onOpenChange={(open) => {
+		if (!open && selectionDownload?.status === 'selecting_files') selectionDialogOpen = true;
+	}}>
+		<Dialog.Content showCloseButton={false} class="gap-4 p-6 sm:max-w-[560px]">
+			<Dialog.Header>
+				<Dialog.Title>Select files for {selectionDownload?.name ?? 'torrent'}</Dialog.Title>
+				<Dialog.Description>You must choose at least one file before this torrent can start.</Dialog.Description>
+			</Dialog.Header>
+			<div class="max-h-[55vh] overflow-y-auto">
+				{#if loadingSelection}
+					<div class="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Loading files…</div>
+				{:else}
+					<div class="grid gap-1">
+						{#each selectionDownload?.files ?? [] as file}
+							<label class="flex cursor-pointer items-center gap-3 rounded px-2 py-2 text-sm hover:bg-muted">
+								<input type="checkbox" checked={file.id != null && selectedFileIds.includes(file.id)} onchange={() => toggleFile(file.id)} />
+								<span class="min-w-0 flex-1 truncate" title={file.name}>{fileName(file)}</span>
+								<span class="shrink-0 font-mono text-xs text-muted-foreground">{fileSize(file)}</span>
+							</label>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			<Dialog.Footer>
+				<Button size="sm" disabled={loadingSelection || submittingSelection || !selectedFileIds.length} onclick={submitSelection}>{submittingSelection ? 'Starting…' : `Start with ${selectedFileIds.length} selected`}</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	</Dialog.Root>
+
+	<Dialog.Root bind:open={deleteDialogOpen}>
+		<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">
+			<div class="px-5 pt-5 pr-12 pb-4">
+				<Dialog.Header>
+					<Dialog.Title>Remove download?</Dialog.Title>
+					<Dialog.Description>The queue entry will be removed. Local files are kept unless you choose to delete them.</Dialog.Description>
+				</Dialog.Header>
+			</div>
+			<div class="px-5 pb-4">
+				<label class="flex items-center gap-2 text-sm">
+					<input type="checkbox" bind:checked={deleteLocalFiles} /> Delete local files and partial data
+				</label>
+			</div>
+			<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+				<Dialog.Close>
+					{#snippet child({ props })}<Button variant="outline" size="sm" {...props}>Keep</Button>{/snippet}
+				</Dialog.Close>
+				<Button variant="destructive" size="sm" onclick={confirmDelete}>Remove</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	</Dialog.Root>
+
+	</Tooltip.Provider>
+{:else if authChecked}
+	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
+		<Card class="w-full max-w-sm">
+			<CardHeader>
+				<CardTitle>RMT-Debrid</CardTitle>
+				<p class="text-sm text-muted-foreground">Enter the household password to continue.</p>
+			</CardHeader>
+			<CardContent>
+				<form class="grid gap-3" onsubmit={(event) => { event.preventDefault(); login(); }}>
+					<label for="login-password" class="text-sm font-medium">Password</label>
+					<Input id="login-password" type="password" bind:value={password} autocomplete="current-password" autofocus />
+					{#if loginError}<p class="text-xs text-red-400" role="alert">{loginError}</p>{/if}
+					<Button type="submit" disabled={loggingIn || !password}>{loggingIn ? 'Signing in…' : 'Sign in'}</Button>
+				</form>
+			</CardContent>
+		</Card>
+	</main>
+{:else}
+	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
+		<Loader2 class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
+	</main>
+{/if}

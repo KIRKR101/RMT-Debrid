@@ -4,6 +4,7 @@ import re
 import time
 import asyncio
 import logging
+import shutil
 from contextlib import AsyncExitStack, suppress
 import httpx
 import aiofiles
@@ -38,6 +39,31 @@ def sanitize_filename(name: str) -> str:
     # Windows: < > : " / \ | ? *
     # Linux: / (null is not allowed by OS)
     return re.sub(r'[<>:"/\\|?*]', '_', name)
+
+
+def delete_local_artifacts(task: DownloadTask) -> Optional[str]:
+    """Delete a task's known output only when it is safely inside the download root."""
+    if not task.output_path:
+        return None
+    root = os.path.realpath(os.path.expanduser(config.DOWNLOAD_FOLDER))
+    target = os.path.realpath(os.path.expanduser(task.output_path))
+    try:
+        inside_root = os.path.commonpath([root, target]) == root
+    except ValueError:
+        inside_root = False
+    if target == root or not inside_root:
+        return "Refusing to delete a path outside the configured download folder."
+    try:
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        elif os.path.exists(target):
+            os.remove(target)
+        partial = target + ".part"
+        if os.path.isfile(partial):
+            os.remove(partial)
+    except OSError as exc:
+        return str(exc)
+    return None
 
 class DownloadManager:
     def __init__(self):
@@ -77,11 +103,31 @@ class DownloadManager:
         runtime = self.runtime_states.get(task_id)
         if not task or not runtime:
             return
+        if runtime.task_handle and not runtime.task_handle.done():
+            return
 
         if task.type == "direct":
-            runtime.task_handle = asyncio.create_task(self.process_direct_link(task))
+            runtime.task_handle = asyncio.create_task(self._guarded_worker(task, self.process_direct_link))
         elif task.type == "magnet":
-            runtime.task_handle = asyncio.create_task(self.monitor_and_download_torrent(task))
+            runtime.task_handle = asyncio.create_task(self._guarded_worker(task, self.monitor_and_download_torrent))
+
+    async def _guarded_worker(self, task: DownloadTask, worker: Callable[[DownloadTask], Any]):
+        """Convert unexpected worker failures into a visible terminal state."""
+        try:
+            await worker(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            runtime = self.runtime_states.get(task.id)
+            if runtime and runtime.shutdown_requested:
+                return
+            logging.exception("[%s] Worker failed", task.id)
+            task.status = "failed"
+            task.speed_mbps = 0
+            task.rd_speed_bps = 0
+            task.error_message = str(exc)
+            save_task(task)
+            await self.broadcast_update(task)
 
     async def cancel_task(self, task_id: str):
         task = self.tasks.get(task_id)
@@ -134,8 +180,9 @@ class DownloadManager:
             if task.status in ("failed", "rd_error", "cancelled"):
                 task.status = "pending"
                 task.error_message = None
-                task.progress = 0
-                task.completed_files = 0
+                task.cleanup_error = None
+                task.retry_count += 1
+                task.last_retry_time = time.time()
                 runtime.cancel_event = asyncio.Event()
                 runtime.resume_event = asyncio.Event()
                 runtime.resume_event.set()
@@ -143,10 +190,61 @@ class DownloadManager:
                 save_task(task)
                 await self.broadcast_update(task)
                 return
+
+            # A paused task has no live worker after an application restart.
+            # Recreate its runtime events and start the appropriate worker so
+            # the resume action can actually continue persisted .part files.
+            worker_missing = not runtime.task_handle or runtime.task_handle.done()
+            if task.status == "paused" and worker_missing:
+                runtime.cancel_event = asyncio.Event()
+                runtime.resume_event = asyncio.Event()
+                runtime.resume_event.set()
+                runtime.shutdown_requested = False
+                task.status = "pending"
+                task.error_message = None
+                save_task(task)
+                await self.start_task(task_id)
+                return
+
             if runtime.pause_start_time:
                 runtime.total_paused_time += time.time() - runtime.pause_start_time
                 runtime.pause_start_time = None
             runtime.resume_event.set()
+
+    async def select_torrent_files(self, task_id: str, file_ids: List[int]) -> bool:
+        """Select valid torrent files and start the Real-Debrid torrent."""
+        task = self.tasks.get(task_id)
+        runtime = self.runtime_states.get(task_id)
+        if not task or task.type != "magnet" or not task.rd_id or not runtime:
+            return False
+        available = {int(file.get("id")) for file in (task.files_json or []) if file.get("id") is not None}
+        if not file_ids or not set(file_ids).issubset(available):
+            return False
+        if not await rd_api.select_torrent_files(task.rd_id, file_ids):
+            return False
+        selected = set(file_ids)
+        task.files_json = [
+            {**file, "selected": int(file.get("id") in selected),
+             "status": "queued" if file.get("id") in selected else "skipped"}
+            for file in (task.files_json or [])
+        ]
+        task.total_files = len(file_ids)
+        task.completed_files = 0
+        task.status = "starting"
+        task.error_message = None
+        task.error_code = None
+        save_task(task)
+        await self.broadcast_update(task)
+        return True
+
+    async def cleanup_remote(self, task_id: str) -> Optional[str]:
+        """Remove a torrent from Real-Debrid, if this task owns one."""
+        task = self.tasks.get(task_id)
+        if not task or task.type != "magnet" or not task.rd_id:
+            return None
+        if await rd_api.delete_torrent(task.rd_id):
+            return None
+        return "Could not remove the torrent from Real-Debrid."
 
     async def process_direct_link(self, task: DownloadTask):
         """Handles the entire lifecycle of a direct link download."""
@@ -215,6 +313,7 @@ class DownloadManager:
 
             check_interval = 15
             error_streak = 0
+            exception_streak = 0
             max_errors = 5
 
             while not runtime.cancel_event.is_set():
@@ -236,6 +335,7 @@ class DownloadManager:
                          continue
 
                     error_streak = 0
+                    exception_streak = 0
                     status = info.get('status')
                     progress = info.get('progress', 0)
                     task.name = info.get('filename', task.name)
@@ -247,8 +347,24 @@ class DownloadManager:
                     
                     rd_files = info.get('files', [])
                     if rd_files:
-                        task.files_json = [{'id': f.get('id'), 'name': f.get('path'), 'size': f.get('bytes'), 'selected': f.get('selected')} for f in rd_files]
-                        task.total_size_mb = sum((f.get('bytes') or 0) for f in rd_files) / (1024 * 1024)
+                        previous_files = task.files_json or []
+                        previous = {file.get('id'): file for file in previous_files}
+                        selected_ids = {
+                            file.get('id') for file in previous_files
+                            if file.get('selected') and file.get('id') is not None
+                        }
+                        # Once selection has been submitted, keep the local
+                        # progress model scoped to those IDs. Real-Debrid may
+                        # continue returning the complete torrent file list.
+                        if selected_ids and status != 'waiting_files_selection':
+                            rd_files = [file for file in rd_files if file.get('id') in selected_ids]
+                        task.files_json = [
+                            {**previous.get(f.get('id'), {}), "id": f.get('id'), "name": f.get('path'),
+                             "size": f.get('bytes'), "selected": f.get('selected', 0)}
+                            for f in rd_files
+                        ]
+                        selected_files = [f for f in task.files_json if f.get('selected')]
+                        task.total_size_mb = sum((f.get('size') or 0) for f in selected_files or task.files_json) / (1024 * 1024)
 
                     if status == 'waiting_files_selection':
                         task.status = 'selecting_files'
@@ -257,7 +373,7 @@ class DownloadManager:
                         task.rd_speed_bps = 0
                         logging.info(f"[{task_id}] Torrent 'downloaded' on RD. Starting local downloads.")
                         task.status = "unrestricting"
-                        task.progress = 0
+                        task.progress = task.progress if task.progress > 0 else 0
                         save_task(task)
                         await self.broadcast_update(task)
 
@@ -268,25 +384,30 @@ class DownloadManager:
                             save_task(task)
                             break
 
-                        success_count = 0
+                        selected_files = [f for f in (task.files_json or []) if f.get('selected')]
+                        success_count = sum(1 for file in selected_files if file.get('status') == 'completed')
                         total_files = len(links)
                         folder_name = sanitize_filename(task.name or f"download_{task_id}")
                         destination_folder = os.path.join(config.DOWNLOAD_FOLDER, folder_name)
                         os.makedirs(destination_folder, exist_ok=True)
                         task.total_files = total_files
-                        task.completed_files = 0
+                        task.completed_files = success_count
                         task.output_path = destination_folder
                         task.files_json = [
-                            {**(file if isinstance(file, dict) else {}), "progress": 0, "status": "queued", "speed_mbps": 0}
-                            for file in (task.files_json or [])
+                            {**(file if isinstance(file, dict) else {}), "progress": file.get("progress", 0),
+                             "status": file.get("status", "queued"), "speed_mbps": 0}
+                            for file in (selected_files or task.files_json or [])
+                            if not selected_files or file.get("selected", 1)
                         ]
-                        task.progress = 0
+                        task.progress = (success_count / total_files) * 100 if total_files else 0
                         save_task(task)
                         await self.broadcast_update(task)
 
                         for i, rd_link in enumerate(links):
                             if runtime.shutdown_requested: break
                             if runtime.cancel_event.is_set(): break
+                            if i < len(task.files_json) and task.files_json[i].get("status") == "completed":
+                                continue
                             task.current_file_index = i
                             task.current_file_name = (task.files_json[i].get('name', '').split('/')[-1]
                                                       if i < len(task.files_json) else None)
@@ -306,8 +427,8 @@ class DownloadManager:
                                     task.files_json = (task.files_json or []) + [{"name": file_name}]
                                 task.files_json[i] = {**task.files_json[i], "name": file_name, "status": "queued", "progress": 0, "speed_mbps": 0, "local_path": os.path.join(destination_folder, sanitize_filename(file_name))}
                                 
-                                await self.download_file(task, file_url, destination_folder, file_name)
-                                if task.status == "completed":
+                                file_downloaded = await self.download_file(task, file_url, destination_folder, file_name)
+                                if file_downloaded:
                                     success_count += 1
                                     task.completed_files = success_count
                                     task.progress = (success_count / total_files) * 100
@@ -327,6 +448,12 @@ class DownloadManager:
                         else:
                             task.status = "completed"
                             task.progress = 100
+
+                        # A terminal task should not retain a stale transfer
+                        # speed, but keep the previous value while moving
+                        # between files in a multipart download.
+                        task.speed_mbps = 0
+                        task.rd_speed_bps = 0
                         
                         save_task(task)
                         await self.broadcast_update(task)
@@ -349,7 +476,14 @@ class DownloadManager:
                     break
                 except Exception as e:
                     logging.exception(f"Error in monitor loop for {task_id}")
-                    await asyncio.sleep(10)
+                    exception_streak += 1
+                    if exception_streak >= max_errors:
+                        task.status = "rd_error"
+                        task.error_message = "Too many unexpected errors while monitoring."
+                        save_task(task)
+                        await self.broadcast_update(task)
+                        break
+                    await asyncio.sleep(min(10 * exception_streak, 30))
 
             await self.broadcast_update(task)
 
@@ -470,9 +604,15 @@ class DownloadManager:
                     if task.current_file_index < len(files):
                         files[task.current_file_index] = {**files[task.current_file_index], "status": "completed", "progress": 100, "speed_mbps": 0}
                         task.files_json = files
-                task.speed_mbps = 0
+                if task.total_files <= 1:
+                    task.speed_mbps = 0
                 os.rename(temp_filepath, final_filepath)
-                task.status = "completed"
+                if task.total_files <= 1:
+                    task.status = "completed"
+                else:
+                    # A single completed file must not make the whole
+                    # multipart task appear complete between iterations.
+                    task.status = "unrestricting"
                 save_task(task)
                 await self.broadcast_update(task)
                 return True
@@ -486,7 +626,7 @@ class DownloadManager:
             return False
         except Exception as e:
             logging.exception(f"[{task_id}] Download failed")
-            task.status = "failed"
+            task.status = "failed" if task.total_files <= 1 else "unrestricting"
             task.error_message = str(e)
             save_task(task)
             await self.broadcast_update(task)
