@@ -65,6 +65,26 @@ def delete_local_artifacts(task: DownloadTask) -> Optional[str]:
         return str(exc)
     return None
 
+
+def local_file_is_complete(file: Dict[str, Any], destination_folder: str) -> bool:
+    """Verify a persisted completed flag against the local file on disk."""
+    if file.get("status") != "completed":
+        return False
+    local_path = file.get("local_path")
+    if not local_path:
+        name = file.get("name")
+        if not name:
+            return False
+        local_path = os.path.join(destination_folder, sanitize_filename(os.path.basename(name)))
+    try:
+        if not os.path.isfile(local_path) or os.path.isfile(f"{local_path}.part"):
+            return False
+        expected_size = int(file.get("size") or 0)
+        return expected_size <= 0 or os.path.getsize(local_path) >= expected_size
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 class DownloadManager:
     def __init__(self):
         self.semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_DOWNLOADS)
@@ -384,19 +404,23 @@ class DownloadManager:
                             save_task(task)
                             break
 
-                        selected_files = [f for f in (task.files_json or []) if f.get('selected')]
-                        success_count = sum(1 for file in selected_files if file.get('status') == 'completed')
                         total_files = len(links)
                         folder_name = sanitize_filename(task.name or f"download_{task_id}")
                         destination_folder = os.path.join(config.DOWNLOAD_FOLDER, folder_name)
                         os.makedirs(destination_folder, exist_ok=True)
+                        selected_files = [f for f in (task.files_json or []) if f.get('selected')]
+                        local_files = selected_files or task.files_json or []
+                        for file in local_files:
+                            if file.get('status') == 'completed' and not local_file_is_complete(file, destination_folder):
+                                file.update({"status": "queued", "progress": 0, "speed_mbps": 0})
+                        success_count = sum(1 for file in local_files if local_file_is_complete(file, destination_folder))
                         task.total_files = total_files
                         task.completed_files = success_count
                         task.output_path = destination_folder
                         task.files_json = [
                             {**(file if isinstance(file, dict) else {}), "progress": file.get("progress", 0),
                              "status": file.get("status", "queued"), "speed_mbps": 0}
-                            for file in (selected_files or task.files_json or [])
+                            for file in local_files
                             if not selected_files or file.get("selected", 1)
                         ]
                         task.progress = (success_count / total_files) * 100 if total_files else 0
@@ -406,7 +430,7 @@ class DownloadManager:
                         for i, rd_link in enumerate(links):
                             if runtime.shutdown_requested: break
                             if runtime.cancel_event.is_set(): break
-                            if i < len(task.files_json) and task.files_json[i].get("status") == "completed":
+                            if i < len(task.files_json) and local_file_is_complete(task.files_json[i], destination_folder):
                                 continue
                             task.current_file_index = i
                             task.current_file_name = (task.files_json[i].get('name', '').split('/')[-1]

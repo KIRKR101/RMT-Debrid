@@ -97,6 +97,19 @@ def _command(args: List[str]) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
 
+
+def _format_filesystem(value: object) -> str:
+    normalized = str(value or "Unknown").replace("Apple_", "").replace("_", " ").strip().lower()
+    return {
+        "apfs": "APFS",
+        "hfs plus": "HFS+",
+        "hfs": "HFS",
+        "exfat": "exFAT",
+        "ntfs": "NTFS",
+        "fat32": "FAT32",
+    }.get(normalized, normalized)
+
+
 def _windows_volume(mountpoint: str) -> Tuple[str, str, str]:
     get_volume_information = ctypes.WinDLL("kernel32", use_last_error=True).GetVolumeInformationW
     get_volume_information.argtypes = [
@@ -133,6 +146,7 @@ def _windows_volume(mountpoint: str) -> Tuple[str, str, str]:
     return volume_name.value or mountpoint, filesystem.value or "Unknown", drive_type
 
 def _darwin_volume(mountpoint: str) -> Tuple[str, str, str]:
+    info = {}
     try:
         data = subprocess.run(
             ["diskutil", "info", "-plist", mountpoint], capture_output=True, timeout=2, check=True
@@ -143,20 +157,44 @@ def _darwin_volume(mountpoint: str) -> Tuple[str, str, str]:
         import plistlib
         try:
             info = plistlib.loads(data)
-            name = info.get("VolumeName") or info.get("MediaName") or mountpoint
-            filesystem = (
-                info.get("FileSystemType") or info.get("FilesystemType") or
-                info.get("FileSystemPersonality") or info.get("FilesystemName") or
-                info.get("Type") or info.get("Content") or "Unknown"
-            )
-            filesystem = str(filesystem).replace("Apple_", "").replace("_", " ").lower()
-            drive_type = "SSD" if info.get("SolidState") else "HDD"
-            if info.get("RemovableMedia"):
-                drive_type = "Removable"
-            return name, filesystem, drive_type
         except (plistlib.InvalidFileException, ValueError):
-            pass
-    return mountpoint, "Unknown", "Local volume"
+            info = {}
+
+    name = info.get("VolumeName") or info.get("MediaName") or mountpoint
+    filesystem_value = (
+        info.get("FileSystemType") or info.get("FilesystemType") or
+        info.get("FileSystemPersonality") or info.get("FilesystemName") or
+        info.get("Type") or info.get("Content")
+    )
+    drive_type = "SSD" if info.get("SolidState") else "HDD"
+    if info.get("RemovableMedia"):
+        drive_type = "Removable"
+
+    if not filesystem_value:
+        try:
+            text_info = subprocess.run(
+                ["diskutil", "info", mountpoint], capture_output=True, text=True,
+                timeout=2, check=True
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            text_info = ""
+        for line in text_info.splitlines():
+            key, separator, value = line.partition(":")
+            normalized_key = key.strip().lower()
+            if not separator:
+                continue
+            if normalized_key in {"volume name", "device / media name"} and name == mountpoint:
+                name = value.strip() or name
+            if normalized_key in {
+                "file system personality", "filesystem personality", "file system type",
+                "filesystem type", "type (bundle)", "content",
+            }:
+                filesystem_value = value.strip()
+                if filesystem_value:
+                    break
+
+    filesystem = _format_filesystem(filesystem_value)
+    return name, filesystem, drive_type
 
 def _linux_volume(mountpoint: str) -> Tuple[str, str, str]:
     mount_info = _command(["findmnt", "-no", "SOURCE,FSTYPE", mountpoint]).split(maxsplit=1)
@@ -371,14 +409,15 @@ async def get_storage(refresh: bool = False, auth=Depends(verify_api_key)):
         except OSError:
             continue
         seen.add(mountpoint)
-        if refresh or mountpoint not in cache:
+        metadata = cache.get(mountpoint, {})
+        cached_filesystem = str(metadata.get("filesystem", "")).strip().lower()
+        if refresh or mountpoint not in cache or cached_filesystem in {"", "unknown", "n/a"}:
             name, filesystem, drive_type = volume_metadata(mountpoint)
             cache[mountpoint] = {"name": name, "filesystem": filesystem, "type": drive_type}
             cache_changed = True
         else:
-            metadata = cache[mountpoint]
             name = metadata.get("name", mountpoint)
-            filesystem = metadata.get("filesystem", "Unknown")
+            filesystem = _format_filesystem(metadata.get("filesystem", "Unknown"))
             drive_type = metadata.get("type", "Local volume")
         volumes.append({
             "path": mountpoint,

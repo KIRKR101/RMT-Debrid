@@ -1,6 +1,9 @@
 import os
+import plistlib
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 TEST_ROOT = tempfile.mkdtemp(prefix="rmt-debrid-test-")
@@ -12,8 +15,9 @@ os.environ["DOWNLOAD_FOLDER"] = os.path.join(TEST_ROOT, "downloads")
 import config  # noqa: E402
 import database  # noqa: E402
 import rd_api  # noqa: E402
-from downloader import DownloadManager, delete_local_artifacts, sanitize_filename  # noqa: E402
+from downloader import DownloadManager, delete_local_artifacts, local_file_is_complete, sanitize_filename  # noqa: E402
 from models import DownloadTask, RuntimeState  # noqa: E402
+import main  # noqa: E402
 
 
 class CoreTests(unittest.TestCase):
@@ -32,6 +36,35 @@ class CoreTests(unittest.TestCase):
     def test_delete_local_artifacts_rejects_outside_path(self):
         task = DownloadTask(id="1", type="direct", original_link="https://example.test/movie", output_path=os.path.join(TEST_ROOT, "outside.mkv"))
         self.assertIn("outside", delete_local_artifacts(task))
+
+    def test_resume_does_not_trust_stale_completed_file_flag(self):
+        destination = os.path.join(TEST_ROOT, "resume")
+        os.makedirs(destination, exist_ok=True)
+        path = os.path.join(destination, "episode.mkv")
+        with open(path, "wb") as handle:
+            handle.write(b"partial")
+        file = {"name": "episode.mkv", "local_path": path, "size": 100, "status": "completed"}
+        self.assertFalse(local_file_is_complete(file, destination))
+
+    @patch("main.subprocess.run")
+    def test_darwin_volume_reads_apfs_from_diskutil_plist(self, run):
+        run.return_value.stdout = plistlib.dumps({
+            "VolumeName": "Macintosh HD",
+            "FileSystemPersonality": "APFS",
+            "SolidState": True,
+        })
+        self.assertEqual(main._darwin_volume("/"), ("Macintosh HD", "APFS", "SSD"))
+
+    @patch("main.subprocess.run")
+    def test_darwin_volume_falls_back_to_text_output(self, run):
+        run.side_effect = [
+            subprocess.CalledProcessError(1, ["diskutil"]),
+            subprocess.CompletedProcess(
+                ["diskutil"], 0,
+                stdout="Volume Name: Macintosh HD\nFile System Personality: APFS\n",
+            ),
+        ]
+        self.assertEqual(main._darwin_volume("/"), ("Macintosh HD", "APFS", "HDD"))
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
