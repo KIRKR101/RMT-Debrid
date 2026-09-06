@@ -8,6 +8,7 @@
 		Link2,
 		Loader2,
 		Database,
+		FolderOpen,
 		HardDrive,
 		Pause,
 		Play,
@@ -146,6 +147,7 @@
 	let storageDialogOpen = $state(false);
 	let cancelDialogOpen = $state(false);
 	let pendingCancelId = $state<string | null>(null);
+	let clearCompletedDialogOpen = $state(false);
 	let actionInFlight = $state<string | null>(null);
 	let expandedDownloads = $state<Record<string, boolean>>({});
 	let authenticated = $state(false);
@@ -162,6 +164,7 @@
 	let pendingDeleteId = $state<string | null>(null);
 	let deleteLocalFiles = $state(false);
 	let copiedLinkId = $state<string | null>(null);
+	let copiedPathId = $state<string | null>(null);
 
 	let socket: WebSocket | null = null;
 	let reconnectAttempts = 0;
@@ -492,6 +495,23 @@
 		}, 1500);
 	}
 
+	async function copySavePath(download: Download) {
+		if (!download.output_path) {
+			showError('No save path for this download.');
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(pathLabel(download.output_path));
+			copiedPathId = download.id;
+			showSuccess('Save path copied.');
+			setTimeout(() => {
+				if (copiedPathId === download.id) copiedPathId = null;
+			}, 1500);
+		} catch {
+			showError('Could not copy save path.');
+		}
+	}
+
 	function clearLink() {
 		link = '';
 		formMessage = '';
@@ -510,19 +530,56 @@
 		}
 	}
 
-	function fileProgress(download: Download) {
-		return download.total_files > 1
-			? `${download.completed_files} / ${download.total_files} files done`
-			: download.status === 'completed' ? 'Ready' : '1 file';
-	}
-
 	function isMultipart(download: Download) {
 		return download.total_files > 1;
 	}
 
-	function showFileProgress(download: Download) {
-		const visibleStatuses = ['pending', 'starting', 'processing_torrent', 'waiting_rd', 'rd_downloading', 'unrestricting', 'downloading', 'paused', 'completed', 'failed', 'cancelled'];
-		return visibleStatuses.includes(download.status) && (download.status === 'rd_downloading' || Boolean(download.output_path));
+	function formatAdaptiveMb(mb: number) {
+		if (!(mb > 0)) return '';
+		if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+		if (mb >= 100) return `${mb.toFixed(0)} MB`;
+		return `${mb.toFixed(1)} MB`;
+	}
+
+	function sizeLabel(download: Download) {
+		const total = download.total_size_mb || download.size_mb;
+		return (
+			formatAdaptiveMb(total) ||
+			formatAdaptiveMb(download.current_file_size_mb) ||
+			(download.rd_total_size_bytes > 0 ? formatBytes(download.rd_total_size_bytes) : '')
+		);
+	}
+
+	function rowMeta(download: Download) {
+		const parts: string[] = [];
+		if (isMultipart(download)) {
+			parts.push(
+				download.status === 'completed'
+					? `${download.total_files} files`
+					: `${download.completed_files} of ${download.total_files} files`
+			);
+		}
+		const size = isMultipart(download)
+			? sizeLabel(download)
+			: formatAdaptiveMb(download.current_file_size_mb || download.size_mb) || sizeLabel(download);
+		if (size) parts.push(size);
+		const speed = formatSpeed(download);
+		if (speed) parts.push(speed);
+		if (download.seeders != null && (download.status === 'rd_downloading' || download.status === 'processing_torrent')) {
+			parts.push(`${download.seeders} seeders`);
+		}
+		return parts.join(' · ');
+	}
+
+	function showRightPercent(download: Download) {
+		return download.status !== 'completed' && isActive(download.status) && download.status !== 'paused';
+	}
+
+	function metaLine(download: Download) {
+		const base = rowMeta(download);
+		if (download.status === 'completed' || showRightPercent(download)) return base;
+		const percent = `${download.progress.toFixed(0)}%`;
+		return base ? `${base} · ${percent}` : percent;
 	}
 
 	function toggleExpanded(id: string) {
@@ -535,12 +592,6 @@
 
 	function fileSize(file: FileEntry) {
 		return file.size && file.size > 0 ? formatBytes(file.size) : 'Size unknown';
-	}
-
-	function overallSummary(download: Download) {
-		if (!isMultipart(download)) return '1 file';
-		if (download.status === 'rd_downloading') return `${download.total_files} total`;
-		return `${download.completed_files}/${download.total_files} completed`;
 	}
 
 	function errorLabel(download: Download) {
@@ -557,6 +608,13 @@
 
 	function pathLabel(path?: string | null) {
 		return path ? path.replaceAll('\\', '/') : '';
+	}
+
+	function truncateMiddle(value: string, max = 40) {
+		if (value.length <= max) return value;
+		const head = Math.ceil((max - 1) / 2);
+		const tail = Math.floor((max - 1) / 2);
+		return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
 	}
 
 	async function clearDownload(id: string, deleteLocal = false) {
@@ -588,6 +646,11 @@
 		clearingCompleted = true;
 		await Promise.all(targets.map((d) => clearDownload(d.id)));
 		clearingCompleted = false;
+	}
+
+	async function confirmClearCompleted() {
+		clearCompletedDialogOpen = false;
+		await clearCompleted();
 	}
 
 	function requestCancel(id: string) {
@@ -722,7 +785,7 @@
 			<Card class="mt-4 gap-0 rounded-md py-0">
 				<CardContent class="px-3 py-2">
 					<form
-						class="flex flex-col gap-2 sm:flex-row sm:items-center"
+						class="flex items-center gap-2"
 						onsubmit={(e) => {
 							e.preventDefault();
 							addDownload();
@@ -732,27 +795,27 @@
 							<Link2 class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
 							<Input
 								id="link-input"
-								class={`h-10 pr-9 pl-9 font-mono text-[13px] ${linkType === 'invalid' ? 'border-red-500/50' : ''}`}
+								class={`h-10 pr-16 pl-9 font-mono text-[13px] ${linkType === 'invalid' ? 'border-red-500/50' : ''}`}
 								bind:value={link}
-								placeholder="Magnet or direct link"
+								placeholder="Paste magnet or direct link"
 								aria-label="Magnet or direct link"
 								autocomplete="off"
 								spellcheck="false"
 							/>
-							{#if link}
-								<button type="button" onclick={clearLink} aria-label="Clear link" class="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground transition hover:text-foreground cursor-pointer">
-									<X class="size-3.5" />
+							<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
+								<button type="button" onclick={pasteLink} aria-label="Paste from clipboard" title="Paste from clipboard" class="grid size-6 cursor-pointer place-items-center rounded text-foreground/60 transition hover:text-foreground">
+									<Clipboard class="size-3.5" />
 								</button>
-							{/if}
+								{#if link}
+									<button type="button" onclick={clearLink} aria-label="Clear link" class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground transition hover:text-foreground">
+										<X class="size-3.5" />
+									</button>
+								{/if}
+							</div>
 						</div>
-						<div class="flex shrink-0 items-center gap-2">
-							<Button type="button" variant="outline" class="h-10" onclick={pasteLink}>
-								<Clipboard class="size-4" /> Paste
-							</Button>
-							<Button type="submit" class="h-10 flex-1 sm:flex-none" disabled={!canAdd || adding}>
-								{#if adding}<Loader2 class="size-4 animate-spin" /> Adding…{:else}Add{/if}
-							</Button>
-						</div>
+						<Button type="submit" class="h-10 shrink-0 disabled:opacity-30" disabled={!canAdd || adding}>
+							{#if adding}<Loader2 class="size-4 animate-spin" /> Adding…{:else}Add{/if}
+						</Button>
 					</form>
 					{#if formMessage}
 						<p class="mt-2 text-xs text-red-400" role="alert">{formMessage}</p>
@@ -765,48 +828,45 @@
 			<!-- queue -->
 			<section aria-labelledby="downloads-heading" class="mt-4">
 				<Card class="gap-0 rounded-md py-0">
-					<CardHeader class="border-b border-border/60 px-3 py-2">
-						<div class="flex flex-wrap items-center justify-between gap-3">
+					<CardHeader class="border-b border-border/60 px-4 py-3">
+						<div class="flex flex-wrap items-center justify-between gap-2">
 							<CardTitle id="downloads-heading" class="text-sm font-semibold text-foreground">
 								Download Queue
 							</CardTitle>
 							{#if completedDownloads > 0}
-								<Button variant="ghost" size="xs" disabled={clearingCompleted} onclick={clearCompleted}>
+								<Button variant="ghost" size="xs" disabled={clearingCompleted} onclick={() => (clearCompletedDialogOpen = true)}>
 									{#if clearingCompleted}<Loader2 class="size-3 animate-spin" />{/if}
 									Clear completed
 								</Button>
 							{/if}
 						</div>
-						<div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-							<div class="relative min-w-0 flex-1">
+						<div class="mt-2.5 grid items-center gap-2 sm:grid-cols-5">
+							<div class="relative min-w-0 sm:col-span-3">
 								<Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-								<Input bind:value={query} placeholder="Search" aria-label="Search downloads" class="h-8 pl-8 text-[13px]" />
+								<Input bind:value={query} placeholder="Search downloads..." aria-label="Search downloads" class="h-8 pl-8 text-[13px]" />
 							</div>
-							<div class="flex items-center gap-1" role="group" aria-label="Filter downloads">
+							<div class="flex items-center gap-1 rounded-lg border border-border/50 bg-muted p-1 sm:col-span-2" role="group" aria-label="Filter downloads">
 								{#each [{ k: 'all', label: 'All', n: orderedDownloads.length }, { k: 'active', label: 'Active', n: activeDownloads }, { k: 'completed', label: 'Completed', n: completedDownloads }, { k: 'failed', label: 'Failed', n: failedDownloads }] as f}
-									<Button
-										variant={activeFilter === f.k ? 'secondary' : 'ghost'}
-										size="xs"
+									<button
+										type="button"
 										aria-pressed={activeFilter === f.k}
 										onclick={() => (activeFilter = f.k as typeof activeFilter)}
+										class={`flex h-6 flex-1 cursor-pointer items-center justify-center gap-1 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap transition-colors duration-75 ${activeFilter === f.k ? 'bg-foreground/10 text-foreground shadow-sm' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'}`}
 									>
-										{f.label} <span class="font-mono text-[10px] text-muted-foreground">{f.n}</span>
-									</Button>
+										<span class="leading-none">{f.label} <span class="relative -top-px font-mono text-[10px] opacity-70">{f.n}</span></span>
+									</button>
 								{/each}
 							</div>
 						</div>
 					</CardHeader>
 
-					<CardContent class="p-0">
+					<CardContent class="px-4 pb-2">
 						{#if initialLoading}
-							<div class="divide-y divide-border/50" aria-label="Loading downloads">
+							<div class="grid gap-1 py-2" aria-label="Loading downloads">
 								{#each [0, 1, 2] as i}
-									<div class="flex items-center gap-4 px-3 py-3">
-										<div class="size-9 animate-pulse rounded bg-muted"></div>
-										<div class="min-w-0 flex-1">
-											<div class="h-3 w-2/3 animate-pulse rounded bg-muted"></div>
-											<div class="mt-2 h-1.5 w-full animate-pulse rounded bg-muted"></div>
-										</div>
+									<div class="py-2">
+										<div class="h-3.5 w-2/3 animate-pulse rounded bg-muted"></div>
+										<div class="mt-2 h-[5px] w-full animate-pulse rounded bg-muted"></div>
 									</div>
 								{/each}
 							</div>
@@ -818,12 +878,12 @@
 						{:else if filteredDownloads.length === 0}
 							<div class="px-6 py-10 text-center text-sm text-muted-foreground">No matches</div>
 						{:else}
-							<ul class="divide-y divide-border/50">
+							<ul class="divide-y divide-border/30">
 								{#each filteredDownloads as download (download.id)}
-									<li class="px-3 py-2.5">
-										<div class="flex items-start gap-3">
-											<div class="mt-0.5 flex w-5 shrink-0 items-center">
-										{#if showFileProgress(download) && isMultipart(download)}
+									<li class="group py-3.5">
+										<div class="flex items-start gap-1.5">
+											<div class="flex h-8 w-5 shrink-0 items-center justify-center">
+										{#if isMultipart(download)}
 													<button type="button" class="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label={`${expandedDownloads[download.id] ? 'Collapse' : 'Expand'} file list`} aria-expanded={expandedDownloads[download.id] ?? false} onclick={() => toggleExpanded(download.id)}>
 															<ChevronRight class={`size-3.5 transition-transform ${expandedDownloads[download.id] ? 'rotate-90' : ''}`} />
 													</button>
@@ -833,14 +893,18 @@
 													</div>
 
 											<div class="min-w-0 flex-1">
-												<div class="flex items-start justify-between gap-2">
+												<div class="flex items-center justify-between gap-3">
 															<div class="flex min-w-0 items-center gap-1.5">
-																<p class="min-w-0 truncate text-[13px] font-medium" title={download.name}>{download.name}</p>
+																<p class="min-w-0 truncate text-sm font-semibold" title={download.name}>{download.name}</p>
+																<span class={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium whitespace-nowrap capitalize ${statusClass(download.status)}`}>
+																	<span class={`size-1.5 rounded-full ${dotClass(download.status)}`}></span>
+																	{statusLabel(download.status)}
+																</span>
 																{#if download.original_link}
 																	<Tooltip.Root>
 																		<Tooltip.Trigger>
 																			{#snippet child({ props })}
-																				<Button {...props} variant="ghost" size="icon-sm" class="size-6 shrink-0" aria-label={download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'} onclick={() => copyOriginalLink(download)}>
+																				<Button {...props} variant="ghost" size="icon-sm" class="hidden size-6 shrink-0 group-hover:inline-flex" aria-label={download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'} onclick={() => copyOriginalLink(download)}>
 																					{#if copiedLinkId === download.id}<Check class="size-3.5 text-emerald-400" />{:else}<Link2 class="size-3.5" />{/if}
 																				</Button>
 																			{/snippet}
@@ -848,12 +912,8 @@
 																		<Tooltip.Content>{download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'}</Tooltip.Content>
 																	</Tooltip.Root>
 																{/if}
-																<span class={`inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] font-medium capitalize ${statusClass(download.status)}`}>
-																	<span class={`size-1.5 rounded-full ${dotClass(download.status)}`}></span>
-																	{statusLabel(download.status)}
-																</span>
 															</div>
-													<div class="flex shrink-0 items-center">
+													<div class="flex shrink-0 items-center gap-0.5">
 														{#if !isActive(download.status)}
 															{#if download.status === 'failed' || download.status === 'rd_error'}
 																<Tooltip.Root>
@@ -868,16 +928,40 @@
 															<Tooltip.Root>
 																<Tooltip.Trigger>
 																	{#snippet child({ props })}
-									<Button {...props} variant="ghost" size="icon-sm" aria-label="Remove download" onclick={() => requestDelete(download.id)}><Trash2 class="size-3.5" /></Button>
+									{#if download.status === 'completed' && download.output_path}
+															<Tooltip.Root>
+																<Tooltip.Trigger>
+																	{#snippet child({ props })}
+																		<Button {...props} variant="ghost" size="icon-sm" aria-label="Copy save path" onclick={() => copySavePath(download)}>{#if copiedPathId === download.id}<Check class="size-3.5 text-emerald-400" />{:else}<FolderOpen class="size-3.5" />{/if}</Button>
+																	{/snippet}
+																</Tooltip.Trigger>
+																<Tooltip.Content>Copy save path</Tooltip.Content>
+															</Tooltip.Root>
+														{/if}
+														<Button {...props} variant="ghost" size="icon-sm" aria-label="Remove download" onclick={() => requestDelete(download.id)}><Trash2 class="size-3.5" /></Button>
 																	{/snippet}
 																</Tooltip.Trigger>
 																<Tooltip.Content>Remove</Tooltip.Content>
 															</Tooltip.Root>
 								{:else}
 									{#if download.status === 'downloading'}
-											<Button variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Pause download" onclick={() => downloadAction(download.id, 'pause')}><Pause class="size-3.5" /></Button>
+											<Tooltip.Root>
+																		<Tooltip.Trigger>
+																			{#snippet child({ props })}
+																				<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Pause download" onclick={() => downloadAction(download.id, 'pause')}><Pause class="size-3.5" /></Button>
+																			{/snippet}
+																		</Tooltip.Trigger>
+																		<Tooltip.Content>Pause</Tooltip.Content>
+																	</Tooltip.Root>
 									{:else if download.status === 'paused'}
-											<Button variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Resume download" onclick={() => downloadAction(download.id, 'resume')}><Play class="size-3.5" /></Button>
+											<Tooltip.Root>
+																		<Tooltip.Trigger>
+																			{#snippet child({ props })}
+																				<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Resume download" onclick={() => downloadAction(download.id, 'resume')}><Play class="size-3.5" /></Button>
+																			{/snippet}
+																		</Tooltip.Trigger>
+																		<Tooltip.Content>Resume</Tooltip.Content>
+																	</Tooltip.Root>
 									{/if}
 															<Tooltip.Root>
 																<Tooltip.Trigger>
@@ -891,53 +975,46 @@
 													</div>
 												</div>
 
-											<div class="-mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
-												{#if isMultipart(download) && formatSpeed(download)}<span>{formatSpeed(download)}</span>{/if}
-										{#if download.seeders != null && (download.status === 'rd_downloading' || download.status === 'processing_torrent')}<span>{download.seeders} seeders</span>{/if}
-									</div>
-
-													<div class="mt-3 flex items-end justify-between gap-3">
-														{#if isMultipart(download)}
-															<div>
-																<p class="text-[11px] font-semibold tracking-wide text-foreground uppercase">Overall progress</p>
-																<p class="mt-0.5 font-mono text-[10px] text-muted-foreground">{overallSummary(download)} · {formatMb(download.total_size_mb || download.size_mb)}</p>
-															</div>
-														{:else}
-															<div>
-																<p class="text-[11px] font-semibold tracking-wide text-foreground uppercase">Progress</p>
-																<p class="mt-0.5 font-mono text-[10px] text-muted-foreground">{formatMb(download.current_file_size_mb || download.size_mb)}{#if formatSpeed(download)} · {formatSpeed(download)}{/if}</p>
-															</div>
-														{/if}
-														<strong class="font-mono text-xs text-foreground">{download.progress.toFixed(0)}%</strong>
-													</div>
-								<div class="mt-1.5 flex items-center gap-2.5">
-									<Progress value={download.progress} max={100} class={`h-1 flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
-								</div>
-								{#if showFileProgress(download) && isMultipart(download)}
-																{#if expandedDownloads[download.id]}
-																<div class="mt-3 grid gap-1.5 rounded border border-border/70 bg-muted/15 p-2">
-											{#each download.files ?? [] as file, index}
-												<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-[10px]">
-													<div class="flex min-w-0 items-center gap-1.5">
-														{#if download.status !== 'rd_downloading'}
-															<span class={`size-1.5 shrink-0 rounded-full ${file.status === 'completed' ? 'bg-emerald-400' : file.status === 'downloading' ? 'bg-sky-400' : 'bg-muted-foreground/40'}`}></span>
-														{/if}
-														<span class="truncate font-mono text-muted-foreground" title={file.name}>{index + 1}. {fileName(file)}</span>
-													</div>
-													<span class="font-mono text-muted-foreground">{fileSize(file)}{#if download.status !== 'rd_downloading'} · {(file.progress ?? 0).toFixed(0)}%{#if file.speed_mbps && file.speed_mbps > 0} · {file.speed_mbps.toFixed(1)} MB/s{/if}{/if}</span>
-													{#if download.status !== 'rd_downloading'}
-														<Progress value={file.progress ?? 0} max={100} class={`col-span-2 h-1 ${barClass(file.status ?? download.status)}`} aria-label={`${fileName(file)} progress`} />
-													{/if}
-												</div>
-											{/each}
-																	</div>
-																	{/if}
-										{/if}
-										{#if download.output_path}
-											<div class="mt-3 flex min-w-0 items-center gap-1.5 border-t border-border/60 pt-2 font-mono text-[10px]">
-												<span class="shrink-0 text-muted-foreground">{download.status === 'completed' ? 'Saved to:' : 'Saving to:'}</span>
-												<p class="min-w-0 truncate text-foreground" title={download.output_path}>{pathLabel(download.output_path)}</p>
+										<div class="mt-1 flex items-baseline justify-between gap-3">
+											<p class="min-w-0 truncate font-mono text-xs text-muted-foreground">{metaLine(download)}</p>
+											{#if showRightPercent(download)}
+												<span class="w-11 shrink-0 text-right font-mono text-xs text-foreground">{download.progress.toFixed(0)}%</span>
+											{/if}
+										</div>
+										{#if download.status !== 'completed'}
+											<div class="mt-1.5">
+												<Progress value={download.progress} max={100} class={`h-[5px] flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
 											</div>
+										{/if}
+									{#if isMultipart(download) && expandedDownloads[download.id]}
+										{#if download.status === 'completed'}
+											<div class="mt-1.5 grid gap-1">
+												{#each download.files ?? [] as file}
+													<div class="flex items-center gap-2 text-xs">
+														<Check class="size-3.5 shrink-0 text-emerald-400" />
+														<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.name}>{fileName(file)}</span>
+														<span class="ml-auto shrink-0 font-mono text-muted-foreground">{fileSize(file)}</span>
+													</div>
+												{/each}
+											</div>
+										{:else}
+											<div class="mt-1.5 grid gap-1">
+												{#each download.files ?? [] as file}
+													<div>
+														<div class="flex items-baseline gap-2 text-xs">
+															<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.name}>{fileName(file)}</span>
+															<span class="ml-auto shrink-0 font-mono text-muted-foreground">{fileSize(file)}{#if download.status !== 'rd_downloading'} · {(file.progress ?? 0).toFixed(0)}%{/if}</span>
+														</div>
+														{#if download.status !== 'rd_downloading'}
+															<Progress value={file.progress ?? 0} max={100} class={`mt-0.5 h-[3px] ${barClass(file.status ?? download.status)}`} aria-label={`${fileName(file)} progress`} />
+														{/if}
+													</div>
+												{/each}
+											</div>
+										{/if}
+									{/if}
+										{#if download.output_path}
+											<p class="mt-1.5 truncate font-mono text-[11px] text-muted-foreground/50" title={pathLabel(download.output_path)}>{truncateMiddle(pathLabel(download.output_path))}</p>
 										{/if}
 
 													{#if download.error_message && download.status !== 'cancelled'}
@@ -1172,6 +1249,32 @@
 				</Button>
 			</div>
 		</div>
+	</Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root bind:open={clearCompletedDialogOpen}>
+	<Dialog.Content class="sm:max-w-[380px]">
+		<div class="px-5 pt-5 pr-12 pb-4">
+			<Dialog.Header>
+				<div class="flex items-start gap-3">
+					<span class="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+						<Trash2 class="size-4" />
+					</span>
+					<div class="grid gap-1 pt-0.5">
+						<Dialog.Title>Clear completed?</Dialog.Title>
+						<Dialog.Description>{completedDownloads} completed {completedDownloads === 1 ? 'download' : 'downloads'} will be removed from the queue. Local files are kept.</Dialog.Description>
+					</div>
+				</div>
+			</Dialog.Header>
+		</div>
+		<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+			<Dialog.Close>
+				{#snippet child({ props })}
+					<Button variant="outline" size="sm" class="h-8" {...props}>Keep</Button>
+				{/snippet}
+			</Dialog.Close>
+			<Button size="sm" class="h-8" onclick={confirmClearCompleted}>Clear completed</Button>
+		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>
 
