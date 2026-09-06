@@ -37,6 +37,7 @@
 		id: string;
 		name: string;
 		type: string;
+		original_link?: string | null;
 		status: string;
 		progress: number;
 		added_time?: number;
@@ -160,6 +161,7 @@
 	let deleteDialogOpen = $state(false);
 	let pendingDeleteId = $state<string | null>(null);
 	let deleteLocalFiles = $state(false);
+	let copiedLinkId = $state<string | null>(null);
 
 	let socket: WebSocket | null = null;
 	let reconnectAttempts = 0;
@@ -458,6 +460,36 @@
 		} catch {
 			formMessage = 'Clipboard access is unavailable.';
 		}
+	}
+
+	async function copyOriginalLink(download: Download) {
+		if (!download.original_link) {
+			showError('No link available for this download.');
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(download.original_link);
+		} catch {
+			const textarea = document.createElement('textarea');
+			textarea.value = download.original_link;
+			textarea.style.position = 'fixed';
+			textarea.style.opacity = '0';
+			document.body.appendChild(textarea);
+			textarea.select();
+			try {
+				document.execCommand('copy');
+			} catch {
+				textarea.remove();
+				showError('Could not copy link.');
+				return;
+			}
+			textarea.remove();
+		}
+		copiedLinkId = download.id;
+		showSuccess(download.type === 'magnet' ? 'Magnet link copied.' : 'Download link copied.');
+		setTimeout(() => {
+			if (copiedLinkId === download.id) copiedLinkId = null;
+		}, 1500);
 	}
 
 	function clearLink() {
@@ -802,8 +834,20 @@
 
 											<div class="min-w-0 flex-1">
 												<div class="flex items-start justify-between gap-2">
-															<div class="flex min-w-0 items-center gap-2">
+															<div class="flex min-w-0 items-center gap-1.5">
 																<p class="min-w-0 truncate text-[13px] font-medium" title={download.name}>{download.name}</p>
+																{#if download.original_link}
+																	<Tooltip.Root>
+																		<Tooltip.Trigger>
+																			{#snippet child({ props })}
+																				<Button {...props} variant="ghost" size="icon-sm" class="size-6 shrink-0" aria-label={download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'} onclick={() => copyOriginalLink(download)}>
+																					{#if copiedLinkId === download.id}<Check class="size-3.5 text-emerald-400" />{:else}<Link2 class="size-3.5" />{/if}
+																				</Button>
+																			{/snippet}
+																		</Tooltip.Trigger>
+																		<Tooltip.Content>{download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'}</Tooltip.Content>
+																	</Tooltip.Root>
+																{/if}
 																<span class={`inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] font-medium capitalize ${statusClass(download.status)}`}>
 																	<span class={`size-1.5 rounded-full ${dotClass(download.status)}`}></span>
 																	{statusLabel(download.status)}
