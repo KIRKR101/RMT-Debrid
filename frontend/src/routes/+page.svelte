@@ -80,6 +80,9 @@
 		max_concurrent_downloads: number;
 		rd_api_key_set: boolean;
 		rd_api_key_hint: string;
+		webhook_url: string;
+		webhook_token_set: boolean;
+		webhook_events: string[];
 	};
 
 	type StorageData = {
@@ -110,11 +113,24 @@
 		download_folder: '',
 		max_concurrent_downloads: 1,
 		rd_api_key_set: false,
-		rd_api_key_hint: ''
+		rd_api_key_hint: '',
+		webhook_url: '',
+		webhook_token_set: false,
+		webhook_events: ['download.completed']
 	});
 
 	let link = $state('');
 	let apiKey = $state('');
+	let webhookToken = $state('');
+	const webhookEventOptions = [
+		['download.started', 'Download started'],
+		['download.paused', 'Download paused'],
+		['download.resumed', 'Download resumed'],
+		['download.rd_completed', 'Real-Debrid download finished'],
+		['download.completed', 'Local download completed'],
+		['download.failed', 'Download failed'],
+		['download.cancelled', 'Download cancelled']
+	] as const;
 	let settingsMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 	let storage = $state<StorageData | null>(null);
 	let storageError = $state('');
@@ -572,11 +588,15 @@
 				body: JSON.stringify({
 					rd_api_key: apiKey || null,
 					download_folder: settings.download_folder,
-					max_concurrent_downloads: Number(settings.max_concurrent_downloads)
+					max_concurrent_downloads: Number(settings.max_concurrent_downloads),
+					webhook_url: settings.webhook_url,
+					webhook_token: webhookToken || null,
+					webhook_events: settings.webhook_events
 				})
 			});
 			settings = data;
 			apiKey = '';
+			webhookToken = '';
 			detailsDialogOpen = false;
 			showSuccess('Settings saved.');
 			fetchAccount();
@@ -1033,6 +1053,53 @@
 								class="h-9 w-24 tabular-nums"
 							/>
 						</div>
+						<div class="grid gap-2">
+							<label for="webhook-url" class="text-[13px] leading-none font-medium">Completion webhook</label>
+							<Input
+								id="webhook-url"
+								bind:value={settings.webhook_url}
+								disabled={saving}
+								type="url"
+								placeholder="https://ntfy.example.com/downloads"
+								autocomplete="off"
+								class="h-9 font-mono text-[13px]"
+							/>
+							<p class="text-xs leading-4 text-muted-foreground">POSTs when a download completes.</p>
+						</div>
+						<div class="grid gap-2">
+							<label for="webhook-token" class="text-[13px] leading-none font-medium">Webhook bearer token</label>
+							<Input
+								id="webhook-token"
+								type="password"
+								bind:value={webhookToken}
+								disabled={saving}
+								placeholder={settings.webhook_token_set ? 'Leave blank to keep current' : 'Optional'}
+								autocomplete="new-password"
+								class="h-9 font-mono text-[13px]"
+							/>
+						</div>
+						<fieldset class="grid gap-2">
+							<legend class="pb-2 text-[13px] leading-none font-medium">Notify me about</legend>
+							<div class="grid gap-2 rounded-lg border border-border bg-muted/30 p-3">
+								{#each webhookEventOptions as [event, label]}
+									<label class="flex items-center gap-2 text-[13px]">
+										<input
+											type="checkbox"
+										checked={settings.webhook_events.includes(event)}
+										 onchange={(e) => {
+											const events = new Set(settings.webhook_events);
+											if (e.currentTarget.checked) events.add(event);
+											else events.delete(event);
+											settings.webhook_events = [...events];
+										}}
+										 disabled={saving}
+										/>
+										{label}
+									</label>
+								{/each}
+							</div>
+							<p class="text-xs leading-4 text-muted-foreground">Leave all unchecked to disable notifications.</p>
+						</fieldset>
 					</div>
 				</form>
 			</div>
