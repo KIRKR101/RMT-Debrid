@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Set
 from sqlmodel import SQLModel, Field, JSON, Column
 import time
 import asyncio
@@ -58,3 +58,7 @@ class RuntimeState:
         self.total_paused_time: float = 0.0
         self.pause_start_time: Optional[float] = None
         self.shutdown_requested: bool = False
+        self.webhook_events_sent: Set[str] = set()
+        self.rd_download_started = False
+        self.local_download_started = False
+        self.resume_requested = False

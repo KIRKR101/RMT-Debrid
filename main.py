@@ -261,6 +261,9 @@ class SettingsUpdate(BaseModel):
     rd_api_key: Optional[str] = Field(default=None, max_length=256)
     download_folder: Optional[str] = Field(default=None, max_length=1024)
     max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
+    webhook_url: Optional[str] = Field(default=None, max_length=2048)
+    webhook_token: Optional[str] = Field(default=None, max_length=512)
+    webhook_events: Optional[List[str]] = Field(default=None, max_length=len(config.WEBHOOK_EVENT_NAMES))
 
 
 class LoginRequest(BaseModel):
@@ -306,6 +309,8 @@ async def lifespan(app: FastAPI):
         # Re-register and possibly resume
         manager.tasks[task.id] = task
         manager.runtime_states[task.id] = models.RuntimeState()
+        manager.runtime_states[task.id].local_download_started = task.status in ("paused", "downloading")
+        manager.runtime_states[task.id].resume_requested = task.status == "downloading"
 
         # Versions before shutdown-safe lifecycle handling incorrectly persisted
         # active downloads as cancelled with no reason. Recover those legacy rows;
@@ -451,6 +456,9 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
             rd_api_key=settings.rd_api_key,
             download_folder=settings.download_folder,
             max_concurrent_downloads=settings.max_concurrent_downloads,
+            webhook_url=settings.webhook_url,
+            webhook_token=settings.webhook_token,
+            webhook_events=settings.webhook_events,
         )
         if settings.max_concurrent_downloads is not None:
             manager.update_concurrency(result["max_concurrent_downloads"])

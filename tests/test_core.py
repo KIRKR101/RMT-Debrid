@@ -3,7 +3,7 @@ import plistlib
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 TEST_ROOT = tempfile.mkdtemp(prefix="rmt-debrid-test-")
@@ -68,6 +68,24 @@ class CoreTests(unittest.TestCase):
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completion_webhook_posts_task_summary(self):
+        task = DownloadTask(id="webhook-1", type="direct", original_link="https://example.test/file", name="file.zip", status="completed", total_size_mb=12.5)
+        manager = DownloadManager()
+        with patch.object(config, "WEBHOOK_URL", "https://hooks.example.test/download"), \
+             patch.object(config, "WEBHOOK_TOKEN", "secret"), \
+             patch("downloader.httpx.AsyncClient") as client_factory:
+            client = client_factory.return_value.__aenter__.return_value
+            client.post = AsyncMock()
+            client.post.return_value.raise_for_status = lambda: None
+            manager.runtime_states[task.id] = RuntimeState()
+            await manager.notify_webhook("download.completed", task)
+
+        client.post.assert_awaited_once()
+        self.assertEqual(client.post.await_args.kwargs["headers"]["Authorization"], "Bearer secret")
+        self.assertEqual(client.post.await_args.kwargs["json"]["event"], "download.completed")
+        self.assertIsNone(client.post.await_args.kwargs["json"]["status"])
+        self.assertIsNone(client.post.await_args.kwargs["json"]["progress"])
+
     async def test_resume_restarts_paused_task_after_server_restart(self):
         database.create_db_and_tables()
         manager = DownloadManager()

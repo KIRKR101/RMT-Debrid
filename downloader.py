@@ -103,6 +103,43 @@ class DownloadManager:
             res = self.update_callback(task)
             if asyncio.iscoroutine(res):
                 await res
+        status_event = {
+            "completed": "download.completed",
+            "failed": "download.failed",
+            "rd_error": "download.failed",
+            "cancelled": "download.cancelled",
+        }.get(task.status)
+        if status_event:
+            await self.notify_webhook(status_event, task)
+
+    async def notify_webhook(self, event: str, task: DownloadTask):
+        """Send a best-effort, once-per-task webhook notification."""
+        runtime = self.runtime_states.get(task.id)
+        if not config.WEBHOOK_URL or event not in config.WEBHOOK_EVENTS or not runtime:
+            return
+        if event not in {"download.paused", "download.resumed"} and event in runtime.webhook_events_sent:
+            return
+        runtime.webhook_events_sent.add(event)
+        payload = {
+            "event": event,
+            "download_id": task.id,
+            "name": task.name,
+            "status": task.status if event in {"download.failed", "download.cancelled"} else None,
+            "progress": task.progress if event in {"download.paused", "download.resumed", "download.failed", "download.cancelled"} else None,
+            "size_mb": task.total_size_mb,
+            "output_path": task.output_path,
+        }
+        if task.error_message:
+            payload["error"] = task.error_message
+        headers = {"Content-Type": "application/json"}
+        if config.WEBHOOK_TOKEN:
+            headers["Authorization"] = f"Bearer {config.WEBHOOK_TOKEN}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(config.WEBHOOK_URL, json=payload, headers=headers)
+                response.raise_for_status()
+        except Exception:
+            logging.exception("[%s] Completion webhook failed", task.id)
 
     def get_task(self, task_id: str) -> Optional[DownloadTask]:
         return self.tasks.get(task_id)
@@ -192,6 +229,7 @@ class DownloadManager:
             task.speed_mbps = 0
             save_task(task)
             await self.broadcast_update(task)
+            await self.notify_webhook("download.paused", task)
 
     async def resume_task(self, task_id: str):
         task = self.tasks.get(task_id)
@@ -220,16 +258,20 @@ class DownloadManager:
                 runtime.resume_event = asyncio.Event()
                 runtime.resume_event.set()
                 runtime.shutdown_requested = False
+                runtime.resume_requested = True
                 task.status = "pending"
                 task.error_message = None
                 save_task(task)
                 await self.start_task(task_id)
                 return
 
+            was_paused = runtime.pause_start_time is not None
             if runtime.pause_start_time:
                 runtime.total_paused_time += time.time() - runtime.pause_start_time
                 runtime.pause_start_time = None
             runtime.resume_event.set()
+            if was_paused:
+                runtime.resume_requested = True
 
     async def select_torrent_files(self, task_id: str, file_ids: List[int]) -> bool:
         """Select valid torrent files and start the Real-Debrid torrent."""
@@ -391,6 +433,8 @@ class DownloadManager:
                         task.error_message = 'Waiting for manual file selection on RD.'
                     elif status == 'downloaded':
                         task.rd_speed_bps = 0
+                        if runtime.rd_download_started:
+                            await self.notify_webhook("download.rd_completed", task)
                         logging.info(f"[{task_id}] Torrent 'downloaded' on RD. Starting local downloads.")
                         task.status = "unrestricting"
                         task.progress = task.progress if task.progress > 0 else 0
@@ -492,6 +536,9 @@ class DownloadManager:
                     else:
                          task.status = "waiting_rd" if status == 'queued' else "rd_downloading" if status == 'downloading' else "processing_torrent"
 
+                    if status == 'downloading':
+                        runtime.rd_download_started = True
+
                     save_task(task)
                     await self.broadcast_update(task)
                     await asyncio.sleep(check_interval)
@@ -568,12 +615,22 @@ class DownloadManager:
                 task.current_file_size_mb = task.size_mb
                 if task.total_files <= 1:
                     task.total_size_mb = task.size_mb
+                if total_size > 0:
+                    file_progress = downloaded_size / total_size * 100
+                    task.progress = ((task.completed_files + file_progress / 100) / task.total_files) * 100 if task.total_files > 1 else file_progress
                 task.status = "downloading"
                 if task.total_files > 1 and task.current_file_index is not None:
                     files = list(task.files_json or [])
                     if task.current_file_index < len(files):
                         files[task.current_file_index] = {**files[task.current_file_index], "status": "downloading", "progress": 0, "size": total_size}
                         task.files_json = files
+                if runtime.resume_requested:
+                    runtime.resume_requested = False
+                    runtime.local_download_started = True
+                    await self.notify_webhook("download.resumed", task)
+                elif not runtime.local_download_started:
+                    runtime.local_download_started = True
+                    await self.notify_webhook("download.started", task)
                 await self.broadcast_update(task)
 
                 runtime.last_update_time = time.time()
@@ -589,6 +646,9 @@ class DownloadManager:
                             await runtime.resume_event.wait()
                             task.status = "downloading"
                             runtime.last_update_time = time.time()
+                            if runtime.resume_requested:
+                                runtime.resume_requested = False
+                                await self.notify_webhook("download.resumed", task)
                             await self.broadcast_update(task)
 
                         # Cancel Check
