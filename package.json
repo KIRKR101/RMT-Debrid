@@ -2,9 +2,9 @@
 	"name": "rmt-debrid",
 	"private": true,
 	"scripts": {
-		"build:frontend": "bun run --cwd frontend build",
+		"build:frontend": "cd frontend && bun vite build",
 		"check:frontend": "bun run --cwd frontend check",
 		"test:backend": "bun start-backend.js -m unittest discover -s tests -v",
-		"start": "bun run build:frontend && bun start-backend.js"
+		"start": "bun start-backend.js --build-frontend"
 	}
 }
