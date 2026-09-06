@@ -118,7 +118,7 @@ Set `APP_PASSWORD` to require the shared household login. The browser never
 receives the Real-Debrid API token. Legacy clients may continue to use
 `X-API-Key` when `API_KEY` is configured.
 
-Useful application endpoints include `GET /api/health`, the authentication
+Useful application endpoints include `GET /api/health`, `GET /api/status`, the authentication
 endpoints under `/api/auth`, and torrent file selection through
 `GET`/`POST /api/download/{id}/files`. Explicit local-file deletion uses
 `DELETE /api/download/{id}?delete_local=true`.

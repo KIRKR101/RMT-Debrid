@@ -389,6 +389,14 @@ async def health():
     except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+@app.get("/api/status")
+async def status(auth=Depends(verify_api_key)):
+    tasks = database.get_all_tasks()
+    return {
+        "type": "full_state",
+        "downloads": {task.id: task.to_dict() for task in tasks},
+    }
+
 @app.get("/api/account/info")
 async def get_account_overall(auth=Depends(verify_api_key)):
     user_info = await rd_api.rd_request("/user")
