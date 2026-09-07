@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Check, ChevronLeft, ChevronRight, ChevronsLeft, Download, Inbox, Loader2, RefreshCw, Search, Trash2 } from '@lucide/svelte';
+	import { Check, ChevronLeft, ChevronRight, ChevronsLeft, Download, Inbox, Info, Loader2, Play, RefreshCw, Search, Trash2 } from '@lucide/svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '$lib/components/ui/card';
@@ -54,6 +54,19 @@
 	let filesLoading = $state<string | null>(null);
 	let filesError = $state<Record<string, string>>({});
 	let downloadingFileId = $state<string | null>(null);
+	type StreamState = { status: 'loading' | 'ready' };
+	let streamingLinks = $state<Record<string, StreamState>>({});
+	type StreamOptions = {
+		streamable: boolean;
+		streaming_url: string;
+		media_infos?: Record<string, unknown>;
+	};
+	let streamingData = $state<Record<string, StreamOptions>>({});
+	let streamDialogOpen = $state(false);
+	let activeStreamTorrent = $state<RdTorrent | null>(null);
+	let activeStreamFile = $state<RdFile | null>(null);
+	let activeStreamKey = $state<string | null>(null);
+	let streamDialogLoading = $state(false);
 	const inactiveStatuses = ['downloaded', 'error', 'magnet_error', 'virus', 'dead'];
 
 	const filteredTorrents = $derived(
@@ -113,6 +126,129 @@
 		const added = formatDate(torrent.added);
 		if (added) parts.push(added);
 		return parts.join(' · ');
+	}
+
+	function mediaSummary(mediaInfos: unknown): {
+		type?: string;
+		duration?: number;
+		audio: Array<{ id: string; label: string }>;
+		subs: Array<{ id: string; label: string }>;
+	} {
+		const summary: {
+			type?: string;
+			duration?: number;
+			audio: Array<{ id: string; label: string }>;
+			subs: Array<{ id: string; label: string }>;
+		} = { audio: [], subs: [] };
+		if (!mediaInfos || typeof mediaInfos !== 'object') return summary;
+		const info = mediaInfos as Record<string, unknown>;
+		if (typeof info.type === 'string' && info.type) summary.type = info.type;
+		if (typeof info.duration === 'number') summary.duration = info.duration;
+		const details = info.details;
+		if (details && typeof details === 'object') {
+			const record = details as Record<string, unknown>;
+			summary.audio = trackEntries(record.audio);
+			summary.subs = trackEntries(record.subtitles);
+		}
+		return summary;
+	}
+
+	function trackEntries(tracks: unknown): Array<{ id: string; label: string }> {
+		if (!tracks || typeof tracks !== 'object') return [];
+		const rows: Array<{ id: string; label: string }> = [];
+		for (const [id, track] of Object.entries(tracks as Record<string, unknown>)) {
+			if (!track || typeof track !== 'object') continue;
+			const record = track as Record<string, unknown>;
+			const lang = typeof record.lang === 'string' && record.lang ? record.lang : typeof record.lang_iso === 'string' ? record.lang_iso : id;
+			const extras: string[] = [];
+			if (typeof record.codec === 'string' && record.codec) extras.push(record.codec);
+			if (typeof record.channels === 'number' && record.channels) extras.push(`${record.channels}ch`);
+			if (typeof record.sampling === 'number' && record.sampling) extras.push(`${record.sampling}Hz`);
+			if (typeof record.type === 'string' && record.type) extras.push(record.type);
+			if (typeof record.width === 'number' && typeof record.height === 'number') extras.push(`${record.width}x${record.height}`);
+			rows.push({ id, label: extras.length > 0 ? `${lang} (${extras.join(' · ')})` : `${lang}` });
+		}
+		return rows;
+	}
+
+	async function openStreamingDialog(torrent: RdTorrent, file: RdFile) {
+		if (file.id == null || !file.individually_downloadable) return;
+		const key = `${torrent.id}:${file.id}`;
+		if (streamDialogLoading) return;
+		delete streamingData[key];
+		streamingLinks = { ...streamingLinks, [key]: { status: 'loading' } };
+		streamDialogLoading = true;
+		activeStreamTorrent = torrent;
+		activeStreamFile = file;
+		activeStreamKey = key;
+		streamDialogOpen = true;
+		try {
+			const response = await fetch(
+				`/api/rd/torrents/${encodeURIComponent(torrent.id)}/files/${file.id}/streaming`
+			);
+			const data = (await response.json().catch(() => null)) as {
+				streamable?: unknown;
+				streaming_url?: unknown;
+				media_infos?: unknown;
+				detail?: string;
+			} | null;
+			if (!response.ok) {
+				if (response.status === 401) authenticated = false;
+				throw new Error(data?.detail ?? 'Could not load streaming links.');
+			}
+			if (data?.streamable !== true) {
+				streamingLinks = { ...streamingLinks, [key]: { status: 'ready' } };
+				toast.info('Streaming is not available for this file.');
+				return;
+			}
+			const options: StreamOptions = {
+				streamable: true,
+				streaming_url: typeof data.streaming_url === 'string' ? data.streaming_url : '',
+				media_infos:
+					data.media_infos && typeof data.media_infos === 'object'
+						? (data.media_infos as Record<string, unknown>)
+						: undefined
+			};
+			if (!options.streaming_url) {
+				streamingLinks = { ...streamingLinks, [key]: { status: 'ready' } };
+				toast.info('Streaming is not available for this file.');
+				return;
+			}
+			streamingData = { ...streamingData, [key]: options };
+			streamingLinks = { ...streamingLinks, [key]: { status: 'ready' } };
+		} catch (err) {
+			streamingLinks = { ...streamingLinks, [key]: { status: 'ready' } };
+			toast.error(err instanceof Error ? err.message : 'Could not load streaming links.');
+		} finally {
+			streamDialogLoading = false;
+		}
+	}
+
+	async function openStreamingPage(torrent: RdTorrent, file: RdFile) {
+		if (file.id == null || !file.individually_downloadable) return;
+		const popup = window.open('about:blank', '_blank');
+		if (!popup) {
+			toast.error('Allow pop-ups to open the Real-Debrid player.');
+			return;
+		}
+		try {
+			const response = await fetch(
+				`/api/rd/torrents/${encodeURIComponent(torrent.id)}/files/${file.id}/streaming`
+			);
+			const data = (await response.json().catch(() => null)) as {
+				streamable?: unknown;
+				streaming_url?: unknown;
+				detail?: string;
+			} | null;
+			if (!response.ok) throw new Error(data?.detail ?? 'Could not open the Real-Debrid player.');
+			if (data?.streamable !== true || typeof data.streaming_url !== 'string' || !data.streaming_url) {
+				throw new Error('Streaming is not available for this file.');
+			}
+			popup.location.href = data.streaming_url;
+		} catch (err) {
+			popup.close();
+			toast.error(err instanceof Error ? err.message : 'Could not open the Real-Debrid player.');
+		}
 	}
 
 	async function toggleTorrentFiles(torrent: RdTorrent) {
@@ -468,7 +604,32 @@
 																<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.path ?? 'Unnamed file'}>{file.path ?? 'Unnamed file'}</span>
 																<div class="flex shrink-0 items-center gap-2">
 																															<span class="font-mono text-muted-foreground">{formatBytes(file.bytes ?? 0)}</span>
-																															{#if file.individually_downloadable}
+															{#if file.individually_downloadable && file.id != null}
+																{@const stream = streamingLinks[`${torrent.id}:${file.id}`]}
+										{#if stream?.status === 'loading'}
+																	<span class="grid size-6 place-items-center text-muted-foreground" aria-label="Checking streaming availability">
+																		<Loader2 class="size-3 animate-spin" />
+																	</span>
+						{:else}
+						<button
+								type="button"
+																		class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+								title="Play in Real-Debrid"
+								aria-label={`Play ${file.path ?? 'file'} in Real-Debrid`}
+								onclick={() => void openStreamingPage(torrent, file)}
+							>
+								<Play class="size-3" />
+							</button>
+							<button
+								type="button"
+								class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+								title="Show media info"
+								aria-label={`Show media info for ${file.path ?? 'file'}`}
+								onclick={() => void openStreamingDialog(torrent, file)}
+							>
+								<Info class="size-3" />
+							</button>
+																{/if}
 																															<button
 																		type="button"
 																		class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-50"
@@ -536,6 +697,65 @@
 			</section>
 		</div>
 	</main>
+
+	<Dialog.Root bind:open={streamDialogOpen}>
+		<Dialog.Content class="gap-0 p-0 sm:max-w-[480px]">
+			<div class="px-5 pt-5 pr-12 pb-4">
+				<Dialog.Header>
+					<Dialog.Title>Stream file</Dialog.Title>
+					<Dialog.Description>
+						{activeStreamFile?.path ?? activeStreamTorrent?.filename ?? 'Choose a version to play'}
+					</Dialog.Description>
+				</Dialog.Header>
+			</div>
+			<div class="max-h-[60vh] space-y-4 overflow-y-auto px-5 pb-5">
+				{#if streamDialogLoading || (activeStreamKey && streamingLinks[activeStreamKey]?.status === 'loading')}
+					<p class="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" /> Loading streaming versions…</p>
+				{:else if activeStreamKey && streamingData[activeStreamKey]}
+					{@const options = streamingData[activeStreamKey]}
+					{@const summary = mediaSummary(options.media_infos)}
+					{#if summary.type || summary.duration !== undefined || summary.audio.length > 0 || summary.subs.length > 0}
+						<div class="space-y-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+							{#if summary.type || summary.duration !== undefined}
+								<p>
+									{#if summary.type}Type: {summary.type} · {/if}
+									{#if summary.duration !== undefined}Duration: {Math.round(summary.duration)}s{/if}
+								</p>
+							{/if}
+							{#if summary.audio.length > 0}
+								<div>
+									<p class="mb-1 font-medium text-foreground">Audio · {summary.audio.length}</p>
+									<ul class="list-disc space-y-0.5 pl-4">
+										{#each summary.audio as track (track.id)}
+											<li>{track.label}</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+							{#if summary.subs.length > 0}
+								<div>
+									<p class="mb-1 font-medium text-foreground">Subtitles · {summary.subs.length}</p>
+									<ul class="list-disc space-y-0.5 pl-4">
+										{#each summary.subs as track (track.id)}
+											<li>{track.label}</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+							{#if summary.audio.length > 0 || summary.subs.length > 0}
+								<p class="text-[11px]">The Real-Debrid player lets you choose the available tracks.</p>
+							{/if}
+						</div>
+					{/if}
+					<a href={options.streaming_url} target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-md border border-border/50 px-3 py-2 text-xs hover:bg-muted">
+						<Play class="size-3.5" /> Open Real-Debrid player
+					</a>
+				{:else}
+					<p class="text-xs text-muted-foreground">No streaming versions available.</p>
+				{/if}
+			</div>
+		</Dialog.Content>
+	</Dialog.Root>
 
 	<Dialog.Root bind:open={deleteRdDialogOpen}>
 			<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">

@@ -37,15 +37,38 @@ STREAMABLE_TORRENT_EXTENSIONS = {
     ".mpg", ".mpeg", ".ts", ".webm", ".wmv", ".mp3", ".flac", ".m4a",
 }
 
-def torrent_files_are_individually_downloadable(info: Dict) -> bool:
+def _selected_torrent_files(info: Dict) -> List[Dict]:
     files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
-    selected = [file for file in files if file.get("selected")]
+    has_selection = any("selected" in file for file in files)
+    return [file for file in files if file.get("selected")] if has_selection else files
+
+
+def torrent_files_are_individually_downloadable(info: Dict) -> bool:
+    selected = _selected_torrent_files(info)
     return (
         info.get("status") == "downloaded"
         and bool(selected)
         and len(info.get("links") or []) == len(selected)
         and all(Path(str(file.get("path") or "")).suffix.lower() in STREAMABLE_TORRENT_EXTENSIONS for file in selected)
     )
+
+
+def _torrent_file_is_streamable(info: Dict, file: Dict) -> bool:
+    return (
+        info.get("status") == "downloaded"
+        and len(info.get("links") or []) == len(_selected_torrent_files(info))
+        and Path(str(file.get("path") or "")).suffix.lower() in STREAMABLE_TORRENT_EXTENSIONS
+    )
+
+
+def _resolve_torrent_file_link(info: Dict, file_id: int) -> Tuple[Dict, str]:
+    links = [link.strip() for link in (info.get("links") or []) if isinstance(link, str) and link.strip()]
+    selected_files = _selected_torrent_files(info)
+    file_index = next((index for index, file in enumerate(selected_files) if file.get("id") == file_id), None)
+    if file_index is None or file_index >= len(links):
+        raise HTTPException(status_code=404, detail="Torrent file is not available for download")
+    return selected_files[file_index], links[file_index]
+
 
 async def broadcast_state_update():
     """Sends current state of all downloads to all connected clients."""
@@ -452,14 +475,11 @@ async def get_rd_torrent(torrent_id: str, auth=Depends(verify_api_key)):
         status_code = 404 if isinstance(info, dict) and info.get("status_code") == 404 else 502
         detail = str(info.get("error", "Real-Debrid request failed")) if isinstance(info, dict) else "Real-Debrid request failed"
         raise HTTPException(status_code=status_code, detail=detail)
-    individually_downloadable = torrent_files_are_individually_downloadable(info)
-    files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
-    has_selection = any("selected" in file for file in files)
-    files = [file for file in files if file.get("selected")] if has_selection else files
+    files = _selected_torrent_files(info)
     return {
         "files": [
                 {**{key: file[key] for key in ("id", "path", "bytes", "selected", "status") if key in file},
-                 "individually_downloadable": individually_downloadable}
+                 "individually_downloadable": _torrent_file_is_streamable(info, file)}
                 for file in files
             ]
     }
@@ -475,28 +495,62 @@ async def download_rd_torrent_file(torrent_id: str, file_id: int, auth=Depends(v
         raise HTTPException(status_code=status_code, detail=detail)
     if info.get("status") != "downloaded":
         raise HTTPException(status_code=409, detail="Torrent is not downloaded on Real-Debrid yet")
-    links = [link.strip() for link in (info.get("links") or []) if isinstance(link, str) and link.strip()]
-    files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
-    has_selection = any("selected" in file for file in files)
-    selected_files = [file for file in files if file.get("selected")] if has_selection else files
-    file_index = next((index for index, file in enumerate(selected_files) if file.get("id") == file_id), None)
-    if file_index is None or file_index >= len(links):
-        raise HTTPException(status_code=404, detail="Torrent file is not available for download")
+    selected_file, link = _resolve_torrent_file_link(info, file_id)
     if not torrent_files_are_individually_downloadable(info):
         raise HTTPException(status_code=409, detail="Real-Debrid returned an archive for this torrent selection")
-    file_path = str(selected_files[file_index].get("path") or "")
+    file_path = str(selected_file.get("path") or "")
 
     task_id = str(uuid.uuid4())
     task = models.DownloadTask(
         id=task_id,
         type="direct",
-        original_link=links[file_index],
+        original_link=link,
         name=file_path or f"torrent_{torrent_id}_file_{file_id}",
         status="pending",
     )
     await manager.register_task(task)
     await manager.start_task(task_id)
     return {"added": 1, "ids": [task_id]}
+
+@app.get("/api/rd/torrents/{torrent_id}/files/{file_id}/streaming")
+async def get_rd_torrent_file_streaming(torrent_id: str, file_id: int, auth=Depends(verify_api_key)):
+    """Return API-backed streaming links for one torrent file.
+
+    Unrestricts the torrent's host link and returns the corresponding
+    Real-Debrid streaming-page URL plus track metadata.
+    """
+    info = await rd_api.get_torrent_info(torrent_id)
+    if isinstance(info, list):
+        info = info[0] if info else {}
+    if not isinstance(info, dict) or ("error" in info and "id" not in info):
+        status_code = 404 if isinstance(info, dict) and info.get("status_code") == 404 else 502
+        detail = str(info.get("error", "Real-Debrid request failed")) if isinstance(info, dict) else "Real-Debrid request failed"
+        raise HTTPException(status_code=status_code, detail=detail)
+    if info.get("status") != "downloaded":
+        raise HTTPException(status_code=409, detail="Torrent is not downloaded on Real-Debrid yet")
+    selected_file, link = _resolve_torrent_file_link(info, file_id)
+    if not _torrent_file_is_streamable(info, selected_file):
+        raise HTTPException(status_code=409, detail="Real-Debrid did not return an individual playable file link")
+    filename = str(selected_file.get("path") or "") or f"torrent_{torrent_id}_file_{file_id}"
+
+    unrestricted = await rd_api.unrestrict_link(link)
+    if not isinstance(unrestricted, dict) or "download" not in unrestricted:
+        detail = str(unrestricted.get("error", "Real-Debrid request failed")) if isinstance(unrestricted, dict) else "Real-Debrid request failed"
+        raise HTTPException(status_code=502, detail=detail)
+    if unrestricted.get("streamable") not in (1, True):
+        return {"streamable": False, "file_id": file_id, "filename": filename}
+    unrestrict_id = unrestricted.get("id")
+    if not unrestrict_id:
+        return {"streamable": False, "file_id": file_id, "filename": filename}
+    media_infos = await rd_api.get_streaming_media_infos(str(unrestrict_id))
+    media_info_links = media_infos if isinstance(media_infos, dict) and "error" not in media_infos else {}
+    return {
+        "streamable": True,
+        "file_id": file_id,
+        "filename": filename,
+        "streaming_url": f"https://real-debrid.com/streaming-{unrestrict_id}",
+        "media_infos": media_info_links,
+    }
 
 @app.get("/api/storage")
 async def get_storage(refresh: bool = False, auth=Depends(verify_api_key)):

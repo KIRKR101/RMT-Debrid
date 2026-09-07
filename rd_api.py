@@ -117,6 +117,11 @@ async def get_torrent_info(torrent_id: str) -> Optional[Dict]:
     return await rd_request(f"/torrents/info/{torrent_id}")
 
 
+async def get_streaming_media_infos(unrestrict_id: str) -> Optional[Dict]:
+    """Returns media metadata (audio/subs tracks) for an unrestricted file id."""
+    return await rd_request(f"/streaming/mediaInfos/{unrestrict_id}")
+
+
 async def list_torrents(
     limit: int = 100,
     page: Optional[int] = None,

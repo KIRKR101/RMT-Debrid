@@ -189,6 +189,38 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.original_link, "https://example.test/b")
         self.assertEqual(task.name, "folder/b.mkv")
 
+    async def test_rd_torrent_details_marks_playable_files_individually(self):
+        info = {
+            "id": "t1", "status": "downloaded",
+            "files": [
+                {"id": 1, "path": "folder/movie.mkv", "selected": 1},
+                {"id": 2, "path": "folder/info.nfo", "selected": 1},
+            ],
+            "links": ["https://example.test/movie", "https://example.test/info"],
+        }
+        with patch.object(rd_api, "get_torrent_info", new=AsyncMock(return_value=info)):
+            out = await main.get_rd_torrent("t1")
+        self.assertEqual([file["individually_downloadable"] for file in out["files"]], [True, False])
+
+    async def test_rd_torrent_streaming_returns_real_debrid_urls(self):
+        info = {
+            "id": "t1", "status": "downloaded",
+            "files": [{"id": 1, "path": "folder/movie.mkv", "selected": 1}],
+            "links": ["https://example.test/movie"],
+        }
+        unrestricted = {
+            "id": "file-1", "download": "https://rd.example/direct", "streamable": 1,
+            "alternative": [{"id": "alt-1", "download": "https://rd.example/alt", "type": "1080p"}],
+        }
+        media_infos = {"type": "movie", "details": {"audio": {}, "subtitles": {}}}
+        with patch.object(rd_api, "get_torrent_info", new=AsyncMock(return_value=info)), \
+             patch.object(rd_api, "unrestrict_link", new=AsyncMock(return_value=unrestricted)) as unrestrict, \
+             patch.object(rd_api, "get_streaming_media_infos", new=AsyncMock(return_value=media_infos)):
+            out = await main.get_rd_torrent_file_streaming("t1", 1)
+        unrestrict.assert_awaited_once_with("https://example.test/movie")
+        self.assertEqual(out["streaming_url"], "https://real-debrid.com/streaming-file-1")
+        self.assertEqual(out["media_infos"], media_infos)
+
     async def test_rd_torrent_file_download_rejects_archive_selection(self):
         info = {
             "id": "t1", "status": "downloaded",
