@@ -16,6 +16,8 @@ import config  # noqa: E402
 import database  # noqa: E402
 import httpx  # noqa: E402
 import rd_api  # noqa: E402
+import scrapers  # noqa: E402
+import torrentio  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from downloader import DownloadManager, delete_local_artifacts, local_file_is_complete, sanitize_filename  # noqa: E402
 from models import DownloadTask, RuntimeState  # noqa: E402
@@ -70,6 +72,193 @@ class CoreTests(unittest.TestCase):
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_magnet_enqueue_stops_for_immediate_file_selection(self):
+        info = {
+            "status": "waiting_files_selection",
+            "filename": "Example",
+            "bytes": 1024,
+            "files": [{"id": 1, "path": "movie.mkv", "bytes": 1024, "selected": 0}],
+        }
+        with patch.object(rd_api, "add_magnet", new=AsyncMock(return_value="rd-1")), \
+             patch.object(rd_api, "get_torrent_info", new=AsyncMock(return_value=info)), \
+             patch.object(main.manager, "register_task", new=AsyncMock()) as register, \
+             patch.object(main.manager, "start_task", new=AsyncMock()) as start:
+            result = await main._enqueue_magnet("magnet:?xt=urn:btih:abc", download_to_server=False)
+        task = register.await_args.args[0]
+        self.assertEqual(result["rd_id"], "rd-1")
+        self.assertEqual(task.status, "selecting_files")
+        self.assertFalse(task.download_to_server)
+        start.assert_not_awaited()
+
+    async def test_infringing_magnet_is_deleted_and_rejected(self):
+        with patch.object(rd_api, "add_magnet", new=AsyncMock(return_value="rd-1")), \
+             patch.object(rd_api, "get_torrent_info", new=AsyncMock(return_value={"error_code": 35, "error": "infringing_file"})), \
+             patch.object(rd_api, "delete_torrent", new=AsyncMock(return_value=True)) as delete:
+            with self.assertRaises(HTTPException) as raised:
+                await main._enqueue_magnet("magnet:?xt=urn:btih:abc", download_to_server=False)
+        delete.assert_awaited_once_with("rd-1")
+        self.assertIn("infringing", raised.exception.detail)
+
+    async def test_torrentio_normalizes_hash_from_resolve_url(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"streams": [{
+                    "title": "Movie 1080p\nextra",
+                    "url": "https://torrentio.example/resolve/realdebrid/key/0123456789abcdef0123456789abcdef01234567/null/0/file.mkv",
+                }]}
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(rd_api, "http_client", client):
+            results = await torrentio.search("movie", "tt1234567")
+        self.assertEqual(results[0]["info_hash"], "0123456789abcdef0123456789abcdef01234567")
+        self.assertEqual(results[0]["magnet"], "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+
+    async def test_torrentio_keeps_unfiltered_series_whole(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"streams": []}
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(rd_api, "http_client", client):
+            await torrentio.search("series", "tt1234567")
+        self.assertIn("/stream/series/tt1234567.json", client.get.await_args.args[0])
+
+    async def test_failed_torrent_metadata_probe_cleans_up_remote_torrent(self):
+        with patch.object(rd_api, "add_magnet", new=AsyncMock(return_value="rd-1")), \
+             patch.object(rd_api, "get_torrent_info", new=AsyncMock(side_effect=RuntimeError("network error"))), \
+             patch.object(rd_api, "delete_torrent", new=AsyncMock(return_value=True)) as delete:
+            with self.assertRaisesRegex(RuntimeError, "network error"):
+                await main._enqueue_magnet("magnet:?xt=urn:btih:abc", download_to_server=False)
+        delete.assert_awaited_once_with("rd-1")
+
+    async def test_torrentio_title_search_keeps_tv_series(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"d": [{"id": "tt1234567", "l": "Example Show", "q": "TV series", "y": 2024}]}
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(rd_api, "http_client", client):
+            results = await torrentio.search_titles("example show", media_type="series")
+        self.assertEqual(results[0]["media_type"], "series")
+
+    async def test_scrapers_merge_and_deduplicate_sources(self):
+        duplicate_hash = "0123456789abcdef0123456789abcdef01234567"
+        with patch.object(torrentio, "search", new=AsyncMock(return_value=[{
+            "info_hash": duplicate_hash,
+            "magnet": f"magnet:?xt=urn:btih:{duplicate_hash}",
+            "title": "Torrentio release",
+            "name": "Torrentio release",
+            "source": "Torrentio",
+        }])), patch.object(scrapers, "_search_prowlarr", new=AsyncMock(return_value=[{
+            "info_hash": duplicate_hash,
+            "magnet": f"magnet:?xt=urn:btih:{duplicate_hash}",
+            "title": "Prowlarr release",
+            "name": "Prowlarr release",
+            "source": "Prowlarr",
+        }])):
+            results = await scrapers.search("movie", "tt1234567")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["sources"], ["Torrentio", "Prowlarr"])
+
+    async def test_prowlarr_search_uses_api_key_and_normalizes_magnet(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [{
+                    "title": "Example 1080p",
+                    "magnetUrl": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+                }]
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(config, "PROWLARR_URL", "http://prowlarr:9696"), \
+             patch.object(config, "PROWLARR_API_KEY", "secret"), \
+             patch.object(rd_api, "http_client", client):
+            results = await scrapers._search_prowlarr("tt1234567", title="Example", season=2, episode=3)
+        self.assertEqual(results[0]["source"], "Prowlarr")
+        self.assertEqual(client.get.await_args.kwargs["headers"]["X-Api-Key"], "secret")
+        self.assertEqual(client.get.await_args.kwargs["params"]["query"], "Example S02E03")
+
+    async def test_prowlarr_search_extracts_hash_from_download_redirect(self):
+        info_hash = "0123456789abcdef0123456789abcdef01234567"
+
+        class SearchResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [{"title": "Example", "downloadUrl": "http://prowlarr/download"}]
+
+        class RedirectResponse:
+            is_redirect = True
+            headers = {"location": f"magnet:?xt=urn:btih:{info_hash}"}
+
+            def raise_for_status(self):
+                return None
+
+        client = AsyncMock()
+        client.get.side_effect = [SearchResponse(), RedirectResponse()]
+        with patch.object(config, "PROWLARR_URL", "http://prowlarr:9696"), \
+             patch.object(config, "PROWLARR_API_KEY", "secret"), \
+             patch.object(rd_api, "http_client", client):
+            results = await scrapers._search_prowlarr("tt1234567", title="Example")
+        self.assertEqual(results[0]["info_hash"], info_hash)
+
+    async def test_prowlarr_search_filters_unrelated_title_matches(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [
+                    {"title": "The Office US S01E01", "infoHash": "0123456789abcdef0123456789abcdef01234567"},
+                    {"title": "The Office S01", "infoHash": "0123456789abcdef0123456789abcdef01234568"},
+                    {"title": "Isekai Office Worker S01E01", "infoHash": "abcdef0123456789abcdef0123456789abcdef01"},
+                ]
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(config, "PROWLARR_URL", "http://prowlarr:9696"), \
+             patch.object(config, "PROWLARR_API_KEY", "secret"), \
+             patch.object(rd_api, "http_client", client):
+            results = await scrapers._search_prowlarr("tt1234567", title="The Office")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["title"], "The Office US S01E01")
+
+    async def test_prowlarr_search_reports_more_results(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return [
+                    {"title": "Example 1080p", "infoHash": "0123456789abcdef0123456789abcdef01234567"},
+                    {"title": "Example 720p", "infoHash": "abcdef0123456789abcdef0123456789abcdef01"},
+                ]
+
+        client = AsyncMock()
+        client.get.return_value = Response()
+        with patch.object(config, "PROWLARR_URL", "http://prowlarr:9696"), \
+             patch.object(config, "PROWLARR_API_KEY", "secret"), \
+             patch.object(config, "PROWLARR_RESULT_LIMIT", 1), \
+             patch.object(rd_api, "http_client", client):
+            results = await scrapers._search_prowlarr("tt1234567", title="Example")
+        self.assertTrue(results.has_more)
+
     async def test_completion_webhook_posts_task_summary(self):
         task = DownloadTask(id="webhook-1", type="direct", original_link="https://example.test/file", name="file.zip", status="completed", total_size_mb=12.5)
         manager = DownloadManager()

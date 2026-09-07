@@ -105,9 +105,18 @@ Build the frontend for FastAPI with `bun run build` from `frontend/`.
 *   Cancel ongoing downloads (both RD processing and local transfer).
 *   Clear completed, failed, or cancelled downloads from the list.
 *   Select individual files from a torrent before starting it.
+*   Discover movie and series releases through Torrentio and Prowlarr, add them directly to Real-Debrid, or send them to the local download queue.
 *   Remove queue entries safely while preserving local files by default.
 *   Protect the web UI with an optional shared household login.
 *   Responsive UI built with Tailwind CSS.
+
+### Integrations
+
+*   [Torrentio discovery](docs/torrentio.md)
+*   [Prowlarr discovery](docs/prowlarr.md)
+
+The Discover page combines configured scraper results, removes duplicates by
+torrent info hash, and supports filtering releases by source.
 
 ## Notes
 

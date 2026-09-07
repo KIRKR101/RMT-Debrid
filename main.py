@@ -26,6 +26,8 @@ import config
 import models
 import database
 import rd_api
+import scrapers
+import torrentio
 from downloader import manager, sanitize_filename, delete_local_artifacts
 
 # --- WebSocket & Update Logic ---
@@ -313,6 +315,10 @@ class FileSelection(BaseModel):
     file_ids: List[int] = Field(min_length=1, max_length=10000)
 
 
+class DiscoveryDownload(BaseModel):
+    info_hash: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
+
+
 AUTH_COOKIE = "rmt_session"
 SESSION_TTL = 60 * 60 * 24 * 30
 sessions: Dict[str, float] = {}
@@ -445,6 +451,112 @@ async def get_account_overall(auth=Depends(verify_api_key)):
 @app.get("/api/settings")
 async def get_settings(auth=Depends(verify_api_key)):
     return config.public_settings()
+
+
+async def _enqueue_magnet(link: str, download_to_server: bool):
+    task_id = str(uuid.uuid4())
+    task = models.DownloadTask(
+        id=task_id,
+        type="magnet",
+        original_link=link,
+        status="pending",
+        download_to_server=download_to_server,
+    )
+    rd_id = await rd_api.add_magnet(link)
+    if not rd_id:
+        rd_error = rd_api.last_error or {}
+        error = str(rd_error.get("error", "Failed to add magnet to Real-Debrid"))
+        error = error.replace("RD Error:", "").split("(Code:")[0].strip().replace("_", " ").capitalize()
+        code = rd_error.get("error_code")
+        raise HTTPException(status_code=400, detail=f"{error} (RD error code {code})" if code else error)
+    task.rd_id = rd_id
+    task.status = "starting"
+    try:
+        info = await rd_api.get_torrent_info(rd_id)
+    except Exception:
+        cleaned = False
+        try:
+            cleaned = await rd_api.delete_torrent(rd_id)
+        except Exception:
+            logging.exception("Could not clean up Real-Debrid torrent %s after metadata lookup failed", rd_id)
+        else:
+            cleaned = bool(cleaned)
+        if not cleaned:
+            logging.warning("Could not clean up Real-Debrid torrent %s after metadata lookup failed", rd_id)
+        raise
+    if rd_api.is_infringing(info):
+        cleaned = await rd_api.delete_torrent(rd_id)
+        detail = "Real-Debrid rejected this torrent as an infringing file."
+        if not cleaned:
+            detail += " RMT could not remove the remote torrent automatically."
+        raise HTTPException(status_code=400, detail=detail)
+    if isinstance(info, dict) and info.get("status") == "waiting_files_selection":
+        task.name = info.get("filename", task.name)
+        task.rd_status = info.get("status")
+        task.rd_total_size_bytes = info.get("bytes", 0)
+        task.files_json = [
+            {"id": file.get("id"), "name": file.get("path"), "size": file.get("bytes"),
+             "selected": file.get("selected", 0)}
+            for file in (info.get("files") or []) if isinstance(file, dict)
+        ]
+        task.total_size_mb = sum((file.get("size") or 0) for file in task.files_json) / (1024 * 1024)
+        task.status = "selecting_files"
+    await manager.register_task(task)
+    if task.status != "selecting_files":
+        await manager.start_task(task_id)
+    return {"status": "accepted", "id": task_id, "rd_id": rd_id}
+
+
+@app.get("/api/discover/search")
+async def discover_titles(q: str = Query(..., min_length=2, max_length=100), type: Optional[str] = Query(default=None), auth=Depends(verify_api_key)):
+    if len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Search must contain at least 2 characters")
+    if type not in {None, "movie", "series"}:
+        raise HTTPException(status_code=400, detail="Type must be movie or series")
+    try:
+        return {"titles": await torrentio.search_titles(q.strip(), media_type=type)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/discover/{media_type}/{imdb_id}")
+async def discover(
+    media_type: str,
+    imdb_id: str,
+    season: Optional[int] = Query(default=None, ge=1, le=1000),
+    episode: Optional[int] = Query(default=None, ge=1, le=1000),
+    title: Optional[str] = Query(default=None, min_length=1, max_length=200),
+    year: Optional[str] = Query(default=None, pattern=r"^\d{4}$"),
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    source: Optional[str] = Query(default=None),
+    auth=Depends(verify_api_key),
+):
+    if media_type not in {"movie", "series"}:
+        raise HTTPException(status_code=400, detail="Media type must be movie or series")
+    if not re.fullmatch(r"tt\d+", imdb_id):
+        raise HTTPException(status_code=400, detail="A valid IMDb ID is required")
+    if episode is not None and season is None:
+        raise HTTPException(status_code=400, detail="Episode requires a season")
+    if source and source not in scrapers.sources():
+        raise HTTPException(status_code=400, detail="Unknown scraper source")
+    try:
+        releases = await scrapers.search(media_type, imdb_id, season=season, episode=episode, title=title, year=year, limit=limit, source=source)
+        return {"media_type": media_type, "imdb_id": imdb_id, "season": season, "episode": episode,
+                "sources": sorted({name for release in releases for name in release.get("sources", [])}),
+                "has_more": releases.has_more,
+                "releases": releases}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/discover/download", status_code=202)
+async def download_discovered(request: DiscoveryDownload, auth=Depends(verify_api_key)):
+    return await add_new_download(link=f"magnet:?xt=urn:btih:{request.info_hash}", auth=auth)
+
+
+@app.post("/api/discover/add-to-rd", status_code=202)
+async def add_discovered_to_rd(request: DiscoveryDownload, auth=Depends(verify_api_key)):
+    return await _enqueue_magnet(f"magnet:?xt=urn:btih:{request.info_hash}", download_to_server=False)
 
 @app.get("/api/rd/torrents")
 async def list_rd_torrents(
@@ -631,23 +743,15 @@ async def add_new_download(link: str = Form(...), auth=Depends(verify_api_key)):
     task_id = str(uuid.uuid4())
     download_type = "magnet" if link.lower().startswith("magnet:") else "direct"
 
+    if download_type == "magnet":
+        return await _enqueue_magnet(link, download_to_server=True)
+
     task = models.DownloadTask(
         id=task_id,
         type=download_type,
         original_link=link,
         status="pending"
     )
-
-    if download_type == "magnet":
-        rd_id = await rd_api.add_magnet(link)
-        if not rd_id:
-            rd_error = rd_api.last_error or {}
-            error = str(rd_error.get("error", "Failed to add magnet to Real-Debrid"))
-            error = error.replace("RD Error:", "").split("(Code:")[0].strip().replace("_", " ").capitalize()
-            code = rd_error.get("error_code")
-            raise HTTPException(status_code=400, detail=f"{error} (RD error code {code})" if code else error)
-        task.rd_id = rd_id
-        task.status = "starting"
 
     await manager.register_task(task)
     await manager.start_task(task_id)
@@ -674,6 +778,7 @@ async def select_download_files(download_id: str, selection: FileSelection, auth
         raise HTTPException(status_code=409, detail="Torrent is not awaiting file selection")
     if not await manager.select_torrent_files(download_id, selection.file_ids):
         raise HTTPException(status_code=400, detail="Invalid file selection or Real-Debrid rejected the request")
+    await manager.start_task(download_id)
     return {"success": True, "id": download_id}
 
 @app.post("/api/rd/torrents/{torrent_id}/import", status_code=202)

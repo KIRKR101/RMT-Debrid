@@ -205,7 +205,7 @@ class DownloadManager:
         if runtime and task:
             runtime.cancel_event.set()
             runtime.resume_event.set() # Ensure it's not stuck in paused
-            if task.status not in ("completed", "failed", "rd_error", "cancelled"):
+            if task.status not in ("completed", "added_to_rd", "failed", "rd_error", "cancelled"):
                 task.status = "cancelled"
                 task.speed_mbps = 0
                 task.rd_speed_bps = 0
@@ -235,7 +235,7 @@ class DownloadManager:
     async def pause_task(self, task_id: str):
         task = self.tasks.get(task_id)
         runtime = self.runtime_states.get(task_id)
-        if runtime and task and task.status not in ("completed", "cancelled"):
+        if runtime and task and task.status not in ("completed", "added_to_rd", "cancelled"):
             runtime.resume_event.clear()
             runtime.pause_start_time = time.time()
             task.status = "paused"
@@ -397,6 +397,15 @@ class DownloadManager:
                     if runtime.shutdown_requested: break
                     if runtime.cancel_event.is_set(): break
 
+                    if rd_api.is_infringing(info):
+                         await rd_api.delete_torrent(torrent_id)
+                         task.status = "failed"
+                         task.error_code = 35
+                         task.error_message = "Real-Debrid rejected this torrent as an infringing file."
+                         save_task(task)
+                         await self.broadcast_update(task)
+                         break
+
                     if not info or (isinstance(info, dict) and 'error' in info):
                          error_streak += 1
                          if error_streak >= max_errors:
@@ -448,6 +457,12 @@ class DownloadManager:
                         task.rd_speed_bps = 0
                         if runtime.rd_download_started:
                             await self.notify_webhook("download.rd_completed", task)
+                        if not task.download_to_server:
+                            task.status = "added_to_rd"
+                            task.progress = 100
+                            save_task(task)
+                            await self.broadcast_update(task)
+                            break
                         logging.info(f"[{task_id}] Torrent 'downloaded' on RD. Starting local downloads.")
                         task.status = "unrestricting"
                         task.progress = task.progress if task.progress > 0 else 0
