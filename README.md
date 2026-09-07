@@ -57,10 +57,13 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
 The UI is a SvelteKit + TypeScript app in `frontend/`, using shadcn-svelte components. FastAPI serves its production build from `static/`.
 
 ```bash
-cd frontend
-bun install
+bun install --cwd frontend
 bun run dev
 ```
+
+`bun run dev` starts the FastAPI backend (with reload) and the Vite dev
+server together; `/api` and `/ws` are proxied to the backend. Use
+`bun run dev:backend` or `bun run dev:frontend` to run either one alone.
 
 Build the frontend for FastAPI with `bun run build` from `frontend/`.
 
@@ -206,9 +209,9 @@ to a failed state.
 
 The started, Real-Debrid-completed, completed, failed, and cancelled events are
 sent at most once per task runtime. Pause and resume events can be sent every
-time the task is paused or resumed. Webhook delivery is not queued or retried;
-use a receiver that handles its own persistence if delivery guarantees are
-required.
+time the task is paused or resumed. Transport failures are retried up to three
+times with exponential backoff; delivery is not queued, so use a receiver that
+handles its own persistence if delivery guarantees are required.
 
 ### Settings precedence
 

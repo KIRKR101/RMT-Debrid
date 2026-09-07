@@ -8,6 +8,7 @@ import shutil
 from contextlib import AsyncExitStack, suppress
 import httpx
 import aiofiles
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from typing import Optional, Dict, Literal, List, Any, Callable
 from urllib.parse import urlparse
 
@@ -85,6 +86,19 @@ def local_file_is_complete(file: Dict[str, Any], destination_folder: str) -> boo
         return False
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
+    retry=retry_if_exception_type(httpx.TransportError),
+    reraise=True,
+)
+async def _post_webhook(url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> None:
+    """POST a webhook notification, retrying transient network errors."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+
+
 class DownloadManager:
     def __init__(self):
         self.semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_DOWNLOADS)
@@ -135,11 +149,10 @@ class DownloadManager:
         if config.WEBHOOK_TOKEN:
             headers["Authorization"] = f"Bearer {config.WEBHOOK_TOKEN}"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(config.WEBHOOK_URL, json=payload, headers=headers)
-                response.raise_for_status()
-        except Exception:
-            logging.exception("[%s] Completion webhook failed", task.id)
+            await _post_webhook(config.WEBHOOK_URL, payload, headers)
+        except httpx.HTTPError as exc:
+            detail = str(exc) or type(exc).__name__
+            logging.warning("[%s] Webhook %s delivery failed: %s", task.id, event, detail)
 
     def get_task(self, task_id: str) -> Optional[DownloadTask]:
         return self.tasks.get(task_id)
@@ -302,7 +315,7 @@ class DownloadManager:
     async def cleanup_remote(self, task_id: str) -> Optional[str]:
         """Remove a torrent from Real-Debrid, if this task owns one."""
         task = self.tasks.get(task_id)
-        if not task or task.type != "magnet" or not task.rd_id:
+        if not task or task.type != "magnet" or not task.rd_id or not task.original_link.startswith("magnet:"):
             return None
         if await rd_api.delete_torrent(task.rd_id):
             return None

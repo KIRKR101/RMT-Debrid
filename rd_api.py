@@ -116,6 +116,23 @@ async def get_torrent_info(torrent_id: str) -> Optional[Dict]:
     """Gets information about a torrent on RD."""
     return await rd_request(f"/torrents/info/{torrent_id}")
 
+
+async def list_torrents(
+    limit: int = 100,
+    page: Optional[int] = None,
+    torrent_filter: Optional[str] = None,
+) -> Optional[List[Dict]]:
+    """Lists torrents currently on Real-Debrid."""
+    params: Dict = {"limit": limit}
+    if page is not None:
+        params["page"] = page
+    if torrent_filter:
+        params["filter"] = torrent_filter
+    response = await rd_request("/torrents", params=params)
+    if isinstance(response, list):
+        return response
+    return response
+
 async def select_torrent_files(torrent_id: str, file_ids: List[int]) -> bool:
     """Select torrent file IDs and start the torrent."""
     if not file_ids:

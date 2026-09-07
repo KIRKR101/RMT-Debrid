@@ -5,6 +5,9 @@
 		"build:frontend": "cd frontend && bun vite build",
 		"check:frontend": "bun run --cwd frontend check",
 		"test:backend": "bun start-backend.js -m unittest discover -s tests -v",
+		"dev": "bun dev.js",
+		"dev:backend": "bun start-backend.js main.py",
+		"dev:frontend": "bun run --cwd frontend dev",
 		"start": "bun start-backend.js --build-frontend"
 	}
 }
