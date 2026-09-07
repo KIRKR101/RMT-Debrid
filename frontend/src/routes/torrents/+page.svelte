@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Check, ChevronLeft, ChevronRight, ChevronsLeft, Download, Inbox, Info, Loader2, Play, RefreshCw, Search, Trash2 } from '@lucide/svelte';
+	import { ArrowDown, Check, ChevronLeft, ChevronRight, ChevronsLeft, CircleAlert, Download, Inbox, Info, Loader2, Play, RefreshCw, Search, Trash2 } from '@lucide/svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '$lib/components/ui/card';
@@ -532,10 +532,25 @@
 												</p>
 											</div>
 							<div class="flex shrink-0 items-center gap-1.5">
-								<span class={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium whitespace-nowrap capitalize ${statusClass(torrent.status)}`}>
-													<span class={`size-1.5 rounded-full ${dotClass(torrent.status)}`}></span>
-													{torrent.status.replaceAll('_', ' ')}
-												</span>
+								<span class={`hidden shrink-0 items-center gap-1.5 text-[11px] font-medium whitespace-nowrap capitalize sm:inline-flex ${statusClass(torrent.status)}`}>
+									<span class={`size-1.5 rounded-full ${dotClass(torrent.status)}`}></span>
+									{torrent.status.replaceAll('_', ' ')}
+								</span>
+								<span
+									class={`inline-flex shrink-0 items-center sm:hidden ${statusClass(torrent.status)}`}
+									aria-label={torrent.status.replaceAll('_', ' ')}
+									title={torrent.status.replaceAll('_', ' ')}
+								>
+									{#if torrent.status === 'downloaded'}
+										<Check class="size-4" aria-hidden="true" />
+									{:else if ['error', 'magnet_error', 'virus', 'dead'].includes(torrent.status)}
+										<CircleAlert class="size-4" aria-hidden="true" />
+									{:else if torrent.status === 'downloading'}
+										<ArrowDown class="size-4" aria-hidden="true" />
+									{:else}
+										<Loader2 class="size-4" aria-hidden="true" />
+									{/if}
+								</span>
 												{#if torrent.status === 'downloaded'}
 													{#if importedIds.includes(torrent.id)}
 														<span class="grid size-6 place-items-center text-emerald-400" title="Added to downloads" aria-label="Added to downloads">
@@ -580,7 +595,7 @@
 											{/if}
 										</div>
 										{#if torrent.status !== 'downloaded'}
-											<div class="mt-1.5">
+											<div class="mt-1.5 pl-7">
 												<Progress
 													value={torrent.progress}
 													max={100}

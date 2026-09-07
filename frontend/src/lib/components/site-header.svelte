@@ -223,7 +223,7 @@
 </script>
 
 <header class="border-b border-border">
-	<div class="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-8">
+	<div class="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-2 px-3 sm:gap-4 sm:px-8">
 		<SiteNav />
 
 		<div class="flex items-center gap-1">
