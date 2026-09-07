@@ -566,13 +566,13 @@
 	<main class="min-h-screen bg-background text-foreground">
 		<SiteHeader onLogout={handleLogout} />
 
-		<div class="mx-auto w-full max-w-6xl px-4 py-6 sm:px-8">
+		<div class="mx-auto w-full max-w-6xl px-3 py-4 sm:px-8 sm:py-6">
 
 			<!-- add download -->
 			<Card class="mt-4 gap-0 rounded-md py-0">
-				<CardContent class="px-3 py-2">
+				<CardContent class="px-3 py-3 sm:py-2">
 					<form
-						class="flex items-center gap-2"
+						class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
 						onsubmit={(e) => {
 							e.preventDefault();
 							addDownload();
@@ -600,7 +600,7 @@
 								{/if}
 							</div>
 						</div>
-						<Button type="submit" class="h-10 shrink-0 disabled:opacity-30" disabled={!canAdd || adding}>
+						<Button type="submit" class="h-10 w-full shrink-0 disabled:opacity-30 sm:w-auto" disabled={!canAdd || adding}>
 							{#if adding}<Loader2 class="size-4 animate-spin" /> Adding…{:else}Add{/if}
 						</Button>
 					</form>
@@ -615,7 +615,7 @@
 			<!-- queue -->
 			<section aria-labelledby="downloads-heading" class="mt-4">
 				<Card class="gap-0 rounded-md py-0">
-					<CardHeader class="border-b border-border/60 px-4 py-3">
+					<CardHeader class="border-b border-border/60 px-3 py-3 sm:px-4">
 						<div class="flex flex-wrap items-center justify-between gap-2">
 							<CardTitle id="downloads-heading" class="text-sm font-semibold text-foreground">
 								Download Queue
@@ -653,7 +653,7 @@
 						</div>
 					</CardHeader>
 
-					<CardContent class="px-4 pb-2">
+					<CardContent class="px-3 pb-2 sm:px-4">
 						{#if initialLoading}
 							<div class="grid gap-1 py-2" aria-label="Loading downloads">
 								{#each [0, 1, 2] as i}
