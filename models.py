@@ -5,7 +5,7 @@ import asyncio
 
 DownloadStatus = Literal[
     "pending", "starting", "unrestricting", "downloading", "paused",
-    "processing_torrent", "waiting_rd", "completed", "failed",
+    "processing_torrent", "waiting_rd", "completed", "added_to_rd", "failed",
     "cancelled", "rd_error", "selecting_files"
 ]
 
@@ -37,6 +37,7 @@ class DownloadTask(SQLModel, table=True):
     retry_count: int = 0
     last_retry_time: Optional[float] = None
     cleanup_error: Optional[str] = None
+    download_to_server: bool = True
 
     def to_dict(self):
         """Converts the task to a dictionary for API/WebSocket transmission."""

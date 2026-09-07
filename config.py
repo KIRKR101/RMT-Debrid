@@ -52,6 +52,8 @@ WEBHOOK_URL = (_saved.get("WEBHOOK_URL") or "") if "WEBHOOK_URL" in _saved else 
 WEBHOOK_TOKEN = _saved["WEBHOOK_TOKEN"] if "WEBHOOK_TOKEN" in _saved else os.getenv("WEBHOOK_TOKEN", "")
 WEBHOOK_EVENTS = _webhook_events(_saved["WEBHOOK_EVENTS"] if "WEBHOOK_EVENTS" in _saved else os.getenv("WEBHOOK_EVENTS", "download.completed"))
 CHUNK_SIZE = 1024 * 1024  # 1MB chunk size as requested
+TORRENTIO_URL = os.getenv("TORRENTIO_URL", "https://torrentio.strem.fun")
+TORRENTIO_FILTER = os.getenv("TORRENTIO_FILTER", "")
 
 # Basic Auth (Optional but recommended)
 API_KEY = os.getenv("API_KEY") # Legacy header secret
@@ -78,6 +80,7 @@ def public_settings():
         "webhook_token_set": bool(WEBHOOK_TOKEN),
         "webhook_events": WEBHOOK_EVENTS,
         "auth_configured": bool(APP_PASSWORD),
+        "torrentio_configured": bool(TORRENTIO_URL),
     }
 
 def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_downloads=None,

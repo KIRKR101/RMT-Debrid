@@ -11,6 +11,14 @@ HTTPX_TIMEOUT = httpx.Timeout(30.0, connect=30.0, read=90.0)
 http_client: Optional[httpx.AsyncClient] = None
 last_error: Optional[Dict] = None
 
+
+def is_infringing(response: object) -> bool:
+    if not isinstance(response, dict):
+        return False
+    code = response.get("error_code")
+    message = str(response.get("error", "")).lower()
+    return code == 35 or "infringing" in message
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def rd_request(endpoint: str, method: str = 'GET', params: Optional[Dict] = None, data: Optional[Dict] = None) -> Optional[Dict]:
     """Makes an asynchronous request to the Real-Debrid API with retries."""

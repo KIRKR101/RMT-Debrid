@@ -161,7 +161,7 @@
 	function statusLabel(value: string) {
 		const labels: Record<string, string> = {
 			processing_torrent: 'processing', waiting_rd: 'queued', rd_downloading: 'RD downloading',
-			unrestricting: 'preparing files', selecting_files: 'select files'
+			unrestricting: 'preparing files', selecting_files: 'select files', added_to_rd: 'added to RD'
 		};
 		return labels[value] ?? value.replaceAll('_', ' ');
 	}
@@ -175,11 +175,12 @@
 	}
 
 	function isActive(status: string) {
-		return !['completed', 'failed', 'cancelled', 'rd_error'].includes(status);
+		return !['completed', 'added_to_rd', 'failed', 'cancelled', 'rd_error'].includes(status);
 	}
 
 	function statusClass(status: string) {
 		if (status === 'completed') return 'text-emerald-400';
+		if (status === 'added_to_rd') return 'text-cyan-400';
 		if (status === 'failed' || status === 'rd_error') return 'text-red-400';
 		if (status === 'paused' || status === 'cancelled') return 'text-zinc-400';
 		if (status === 'rd_downloading') return 'text-violet-300';
@@ -188,6 +189,7 @@
 
 	function dotClass(status: string) {
 		if (status === 'completed') return 'bg-emerald-400';
+		if (status === 'added_to_rd') return 'bg-cyan-400';
 		if (status === 'failed' || status === 'rd_error') return 'bg-red-400';
 		if (status === 'paused' || status === 'cancelled') return 'bg-zinc-500';
 		if (status === 'rd_downloading') return 'bg-violet-400';
@@ -196,6 +198,7 @@
 
 	function barClass(status: string) {
 		if (status === 'completed') return '[&_[data-slot=progress-indicator]]:bg-emerald-400';
+		if (status === 'added_to_rd') return '[&_[data-slot=progress-indicator]]:bg-cyan-400';
 		if (status === 'failed' || status === 'rd_error') return '[&_[data-slot=progress-indicator]]:bg-red-400';
 		if (status === 'paused' || status === 'cancelled') return '[&_[data-slot=progress-indicator]]:bg-zinc-500';
 		if (status === 'rd_downloading') return '[&_[data-slot=progress-indicator]]:bg-violet-400';
@@ -721,7 +724,7 @@
 															<Tooltip.Root>
 																<Tooltip.Trigger>
 																	{#snippet child({ props })}
-									{#if download.status === 'completed' && download.output_path}
+										{#if download.status === 'completed' && download.output_path}
 															<Tooltip.Root>
 																<Tooltip.Trigger>
 																	{#snippet child({ props })}
@@ -774,7 +777,7 @@
 												<span class="w-11 shrink-0 text-right font-mono text-xs text-foreground">{download.progress.toFixed(0)}%</span>
 											{/if}
 										</div>
-										{#if download.status !== 'completed'}
+										{#if isActive(download.status)}
 											<div class="mt-1.5">
 												<Progress value={download.progress} max={100} class={`h-[5px] flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
 											</div>

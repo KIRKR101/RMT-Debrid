@@ -26,6 +26,7 @@ def create_db_and_tables():
                 "retry_count": "INTEGER NOT NULL DEFAULT 0",
                 "last_retry_time": "FLOAT",
                 "cleanup_error": "VARCHAR",
+                "download_to_server": "BOOLEAN NOT NULL DEFAULT 1",
             }.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE downloadtask ADD COLUMN {name} {definition}"))

@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 
 	const links = [
+		{ href: '/discover', label: 'Discover' },
 		{ href: '/', label: 'Downloads' },
 		{ href: '/torrents', label: 'Torrents' }
 	];
