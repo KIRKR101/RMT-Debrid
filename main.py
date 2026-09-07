@@ -11,11 +11,12 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Request, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +31,21 @@ from downloader import manager, sanitize_filename, delete_local_artifacts
 # --- WebSocket & Update Logic ---
 active_connections: List[WebSocket] = []
 state_lock = asyncio.Lock()
+
+STREAMABLE_TORRENT_EXTENSIONS = {
+    ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4",
+    ".mpg", ".mpeg", ".ts", ".webm", ".wmv", ".mp3", ".flac", ".m4a",
+}
+
+def torrent_files_are_individually_downloadable(info: Dict) -> bool:
+    files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
+    selected = [file for file in files if file.get("selected")]
+    return (
+        info.get("status") == "downloaded"
+        and bool(selected)
+        and len(info.get("links") or []) == len(selected)
+        and all(Path(str(file.get("path") or "")).suffix.lower() in STREAMABLE_TORRENT_EXTENSIONS for file in selected)
+    )
 
 async def broadcast_state_update():
     """Sends current state of all downloads to all connected clients."""
@@ -407,6 +423,81 @@ async def get_account_overall(auth=Depends(verify_api_key)):
 async def get_settings(auth=Depends(verify_api_key)):
     return config.public_settings()
 
+@app.get("/api/rd/torrents")
+async def list_rd_torrents(
+    limit: int = Query(default=50, ge=1, le=5000),
+    page: int = Query(default=1, ge=1),
+    filter: Optional[str] = Query(default=None, pattern="^active$"),
+    auth=Depends(verify_api_key),
+):
+    # Real-Debrid exposes no total count, so fetch one extra item to know
+    # whether another page exists.
+    fetch_limit = limit + 1 if limit < 5000 else limit
+    result = await rd_api.list_torrents(limit=fetch_limit, page=page, torrent_filter=filter)
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(status_code=502, detail=str(result.get("error", "Real-Debrid request failed")))
+    items = result if isinstance(result, list) else []
+    if fetch_limit == limit + 1:
+        has_more = len(items) > limit
+    else:
+        has_more = len(items) >= limit
+    return {"torrents": items[:limit], "page": page, "limit": limit, "has_more": has_more}
+
+@app.get("/api/rd/torrents/{torrent_id}")
+async def get_rd_torrent(torrent_id: str, auth=Depends(verify_api_key)):
+    info = await rd_api.get_torrent_info(torrent_id)
+    if isinstance(info, list):
+        info = info[0] if info else {}
+    if not isinstance(info, dict) or ("error" in info and "id" not in info):
+        status_code = 404 if isinstance(info, dict) and info.get("status_code") == 404 else 502
+        detail = str(info.get("error", "Real-Debrid request failed")) if isinstance(info, dict) else "Real-Debrid request failed"
+        raise HTTPException(status_code=status_code, detail=detail)
+    individually_downloadable = torrent_files_are_individually_downloadable(info)
+    files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
+    has_selection = any("selected" in file for file in files)
+    files = [file for file in files if file.get("selected")] if has_selection else files
+    return {
+        "files": [
+                {**{key: file[key] for key in ("id", "path", "bytes", "selected", "status") if key in file},
+                 "individually_downloadable": individually_downloadable}
+                for file in files
+            ]
+    }
+
+@app.post("/api/rd/torrents/{torrent_id}/files/{file_id}/download", status_code=202)
+async def download_rd_torrent_file(torrent_id: str, file_id: int, auth=Depends(verify_api_key)):
+    info = await rd_api.get_torrent_info(torrent_id)
+    if isinstance(info, list):
+        info = info[0] if info else {}
+    if not isinstance(info, dict) or ("error" in info and "id" not in info):
+        status_code = 404 if isinstance(info, dict) and info.get("status_code") == 404 else 502
+        detail = str(info.get("error", "Real-Debrid request failed")) if isinstance(info, dict) else "Real-Debrid request failed"
+        raise HTTPException(status_code=status_code, detail=detail)
+    if info.get("status") != "downloaded":
+        raise HTTPException(status_code=409, detail="Torrent is not downloaded on Real-Debrid yet")
+    links = [link.strip() for link in (info.get("links") or []) if isinstance(link, str) and link.strip()]
+    files = [file for file in (info.get("files") or []) if isinstance(file, dict)]
+    has_selection = any("selected" in file for file in files)
+    selected_files = [file for file in files if file.get("selected")] if has_selection else files
+    file_index = next((index for index, file in enumerate(selected_files) if file.get("id") == file_id), None)
+    if file_index is None or file_index >= len(links):
+        raise HTTPException(status_code=404, detail="Torrent file is not available for download")
+    if not torrent_files_are_individually_downloadable(info):
+        raise HTTPException(status_code=409, detail="Real-Debrid returned an archive for this torrent selection")
+    file_path = str(selected_files[file_index].get("path") or "")
+
+    task_id = str(uuid.uuid4())
+    task = models.DownloadTask(
+        id=task_id,
+        type="direct",
+        original_link=links[file_index],
+        name=file_path or f"torrent_{torrent_id}_file_{file_id}",
+        status="pending",
+    )
+    await manager.register_task(task)
+    await manager.start_task(task_id)
+    return {"added": 1, "ids": [task_id]}
+
 @app.get("/api/storage")
 async def get_storage(refresh: bool = False, auth=Depends(verify_api_key)):
     volumes = []
@@ -531,6 +622,43 @@ async def select_download_files(download_id: str, selection: FileSelection, auth
         raise HTTPException(status_code=400, detail="Invalid file selection or Real-Debrid rejected the request")
     return {"success": True, "id": download_id}
 
+@app.post("/api/rd/torrents/{torrent_id}/import", status_code=202)
+async def import_rd_torrent(torrent_id: str, auth=Depends(verify_api_key)):
+    info = await rd_api.get_torrent_info(torrent_id)
+    if isinstance(info, list):
+        info = info[0] if info else {}
+    if not isinstance(info, dict) or ("error" in info and "id" not in info):
+        status_code = 404 if isinstance(info, dict) and info.get("status_code") == 404 else 502
+        detail = str(info.get("error", "Real-Debrid request failed")) if isinstance(info, dict) else "Real-Debrid request failed"
+        raise HTTPException(status_code=status_code, detail=detail)
+    if info.get("status") != "downloaded":
+        raise HTTPException(status_code=409, detail="Torrent is not downloaded on Real-Debrid yet")
+    links = [link.strip() for link in (info.get("links") or []) if isinstance(link, str) and link.strip()]
+    if not links:
+        raise HTTPException(status_code=409, detail="Torrent has no downloadable links on Real-Debrid yet")
+    task_id = str(uuid.uuid4())
+    task = models.DownloadTask(
+        id=task_id,
+        type="magnet",
+        original_link=f"rd://{torrent_id}",
+        name=info.get("filename") or f"torrent_{torrent_id}",
+        rd_id=torrent_id,
+        status="starting",
+    )
+    await manager.register_task(task)
+    await manager.start_task(task_id)
+    return {"added": 1, "ids": [task_id]}
+
+@app.delete("/api/rd/torrents/{torrent_id}")
+async def delete_rd_torrent(torrent_id: str, auth=Depends(verify_api_key)):
+    result = await rd_api.rd_request(f"/torrents/delete/{torrent_id}", method="DELETE")
+    if isinstance(result, dict) and result.get("success"):
+        return {"success": True, "id": torrent_id}
+    if isinstance(result, dict) and "error" in result:
+        status_code = 404 if result.get("status_code") == 404 else 502
+        raise HTTPException(status_code=status_code, detail=str(result.get("error", "Real-Debrid request failed")))
+    raise HTTPException(status_code=502, detail="Real-Debrid request failed")
+
 @app.post("/api/download/{download_id}/pause")
 async def pause_download(download_id: str, auth=Depends(verify_api_key)):
     if not manager.get_task(download_id):
@@ -606,7 +734,13 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         async with state_lock:
              if websocket in active_connections:
-                active_connections.remove(websocket)
+                 active_connections.remove(websocket)
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def spa_fallback(full_path: str):
+    if full_path.startswith(("api/", "ws", "_app/", "static/")):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse("static/index.html")
 
 if __name__ == "__main__":
     import uvicorn
