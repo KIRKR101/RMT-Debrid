@@ -26,6 +26,7 @@ import config
 import models
 import database
 import rd_api
+import scrapers
 import torrentio
 from downloader import manager, sanitize_filename, delete_local_artifacts
 
@@ -524,6 +525,10 @@ async def discover(
     imdb_id: str,
     season: Optional[int] = Query(default=None, ge=1, le=1000),
     episode: Optional[int] = Query(default=None, ge=1, le=1000),
+    title: Optional[str] = Query(default=None, min_length=1, max_length=200),
+    year: Optional[str] = Query(default=None, pattern=r"^\d{4}$"),
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    source: Optional[str] = Query(default=None),
     auth=Depends(verify_api_key),
 ):
     if media_type not in {"movie", "series"}:
@@ -532,9 +537,14 @@ async def discover(
         raise HTTPException(status_code=400, detail="A valid IMDb ID is required")
     if episode is not None and season is None:
         raise HTTPException(status_code=400, detail="Episode requires a season")
+    if source and source not in scrapers.sources():
+        raise HTTPException(status_code=400, detail="Unknown scraper source")
     try:
+        releases = await scrapers.search(media_type, imdb_id, season=season, episode=episode, title=title, year=year, limit=limit, source=source)
         return {"media_type": media_type, "imdb_id": imdb_id, "season": season, "episode": episode,
-                "releases": await torrentio.search(media_type, imdb_id, season=season, episode=episode)}
+                "sources": sorted({name for release in releases for name in release.get("sources", [])}),
+                "has_more": releases.has_more,
+                "releases": releases}
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

@@ -54,6 +54,9 @@ WEBHOOK_EVENTS = _webhook_events(_saved["WEBHOOK_EVENTS"] if "WEBHOOK_EVENTS" in
 CHUNK_SIZE = 1024 * 1024  # 1MB chunk size as requested
 TORRENTIO_URL = os.getenv("TORRENTIO_URL", "https://torrentio.strem.fun")
 TORRENTIO_FILTER = os.getenv("TORRENTIO_FILTER", "")
+PROWLARR_URL = os.getenv("PROWLARR_URL", "")
+PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
+PROWLARR_RESULT_LIMIT = int(os.getenv("PROWLARR_RESULT_LIMIT", "20"))
 
 # Basic Auth (Optional but recommended)
 API_KEY = os.getenv("API_KEY") # Legacy header secret
@@ -81,6 +84,7 @@ def public_settings():
         "webhook_events": WEBHOOK_EVENTS,
         "auth_configured": bool(APP_PASSWORD),
         "torrentio_configured": bool(TORRENTIO_URL),
+        "prowlarr_configured": bool(PROWLARR_URL),
     }
 
 def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_downloads=None,

@@ -105,32 +105,18 @@ Build the frontend for FastAPI with `bun run build` from `frontend/`.
 *   Cancel ongoing downloads (both RD processing and local transfer).
 *   Clear completed, failed, or cancelled downloads from the list.
 *   Select individual files from a torrent before starting it.
-*   Discover movie and series releases through Torrentio, add them directly to Real-Debrid, or send them to the local download queue.
+*   Discover movie and series releases through Torrentio and Prowlarr, add them directly to Real-Debrid, or send them to the local download queue.
 *   Remove queue entries safely while preserving local files by default.
 *   Protect the web UI with an optional shared household login.
 *   Responsive UI built with Tailwind CSS.
 
-### Torrent discovery
+### Integrations
 
-The Discover page searches titles, supports whole-show, season, and episode
-filters, and queries Torrentio server-side. If `TORRENTIO_URL` is omitted, the
-application uses the public `https://torrentio.strem.fun` endpoint. Set it in
-`.env` to use another Torrentio-compatible endpoint instead:
+*   [Torrentio discovery](docs/torrentio.md)
+*   [Prowlarr discovery](docs/prowlarr.md)
 
-```env
-TORRENTIO_URL=https://torrentio.strem.fun
-TORRENTIO_FILTER=
-```
-
-`TORRENTIO_FILTER` is optional and can contain a configured Torrentio filter,
-including an RD key. It is appended to server-side requests and is never sent
-to the browser. A selected release can either be added to Real-Debrid without
-local downloading or sent through the normal server download flow. Torrents
-that require file selection can be configured before they start.
-
-If `TORRENTIO_URL` is explicitly set to an empty or invalid value, title search
-continues to work but release searches return an error. Leaving the setting
-unset is therefore the recommended zero-configuration setup.
+The Discover page combines configured scraper results, removes duplicates by
+torrent info hash, and supports filtering releases by source.
 
 ## Notes
 

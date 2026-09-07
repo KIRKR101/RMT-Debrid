@@ -9,7 +9,7 @@
 	import SiteHeader from '$lib/components/site-header.svelte';
 
 	type Title = { imdb_id: string; title: string; year: string; media_type: 'movie' | 'series' };
-	type Release = { info_hash: string; title: string; name: string; source: string };
+	type Release = { info_hash: string; title: string; name: string; source: string; sources?: string[] };
 
 	let query = $state('');
 	let mediaType = $state<'movie' | 'series'>('movie');
@@ -20,6 +20,8 @@
 	let releases = $state<Release[]>([]);
 	let searching = $state(false);
 	let loadingReleases = $state(false);
+	let loadingMore = $state(false);
+	let canLoadMore = $state(false);
 	let action = $state<string | null>(null);
 	let added = $state(new Set<string>());
 	let selectionOpen = $state(false);
@@ -32,10 +34,12 @@
 	let releaseQuery = $state('');
 	let quality = $state('All quality');
 	let releaseType = $state('All types');
+	let releaseSource = $state('All sources');
 	let sort = $state('Best match');
 
 	const qualityFilters = ['All quality', '4K / UHD', '1080p', '720p'] as const;
 	const typeFilters = ['All types', 'WEB-DL', 'BluRay', 'Remux', 'Encode'] as const;
+	const sourceFilters = $derived(['All sources', ...new Set(releases.flatMap((release) => release.sources ?? [release.source]))]);
 
 	const filteredReleases = $derived(
 		[...releases]
@@ -45,7 +49,8 @@
 				const matchesQuery = !q || text.includes(q);
 				const matchesQuality = quality === 'All quality' || (quality === '4K / UHD' ? /\b(2160p|4k|uhd)\b/i.test(text) : text.includes(quality));
 				const matchesType = releaseType === 'All types' || text.includes(releaseType.toLowerCase());
-				return matchesQuery && matchesQuality && matchesType;
+				const matchesSource = releaseSource === 'All sources' || (release.sources ?? [release.source]).includes(releaseSource);
+				return matchesQuery && matchesQuality && matchesType && matchesSource;
 			})
 			.sort((a, b) => sort === 'Name A–Z' ? a.title.localeCompare(b.title) : 0)
 	);
@@ -80,17 +85,30 @@
 	}
 
 	async function loadReleases() {
-		if (!selected || loadingReleases) return;
+		const item = selected;
+		if (!item || loadingReleases) return;
 		loadingReleases = true;
+		releases = [];
+		releaseSource = 'All sources';
+		canLoadMore = false;
+		const errors: unknown[] = [];
 		try {
-			const params = new URLSearchParams();
-			if (selected.media_type === 'series' && typeof season === 'number' && Number.isInteger(season) && season > 0) params.set('season', String(season));
-			if (selected.media_type === 'series' && typeof episode === 'number' && Number.isInteger(episode) && episode > 0) params.set('episode', String(episode));
-			const suffix = params.toString() ? `?${params}` : '';
-			const response = await fetch(`/api/discover/${selected.media_type}/${selected.imdb_id}${suffix}`);
-			const data = await response.json();
-			if (!response.ok) throw new Error(data.detail || 'Release search failed');
-			releases = data.releases;
+			const torrentioRequest = fetchReleases(item, 'Torrentio');
+			const prowlarrRequest = fetchReleases(item, 'Prowlarr');
+			try {
+				const data = await torrentioRequest;
+				releases = mergeReleases([], data.releases);
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				const data = await prowlarrRequest;
+				releases = mergeReleases(releases, data.releases);
+				canLoadMore = data.has_more;
+			} catch (error) {
+				errors.push(error);
+			}
+			if (!releases.length && errors.length) throw errors[0];
 			if (!releases.length) toast.info('No releases found for that selection.');
 		} catch (error) {
 			toast.error(error instanceof Error ? error.message : 'Release search failed');
@@ -99,10 +117,56 @@
 		}
 	}
 
+	function mergeReleases(current: Release[], incoming: Release[]) {
+		const merged = new Map(current.map((release) => [release.info_hash, release]));
+		for (const release of incoming) {
+			const existing = merged.get(release.info_hash);
+			if (!existing) {
+				merged.set(release.info_hash, release);
+				continue;
+			}
+			existing.sources = [...new Set([...(existing.sources ?? [existing.source]), ...(release.sources ?? [release.source])])];
+		}
+		return [...merged.values()];
+	}
+
+	async function fetchReleases(item: Title, source: string, limit?: number) {
+			const params = new URLSearchParams();
+			if (item.media_type === 'series' && typeof season === 'number' && Number.isInteger(season) && season > 0) params.set('season', String(season));
+			if (item.media_type === 'series' && typeof episode === 'number' && Number.isInteger(episode) && episode > 0) params.set('episode', String(episode));
+			params.set('title', item.title);
+			if (item.year) params.set('year', item.year);
+			params.set('source', source);
+			if (limit) params.set('limit', String(limit));
+			const suffix = params.toString() ? `?${params}` : '';
+			const response = await fetch(`/api/discover/${item.media_type}/${item.imdb_id}${suffix}`);
+			const data = await response.json();
+			if (!response.ok) throw new Error(data.detail || 'Release search failed');
+			return data as { releases: Release[]; has_more: boolean };
+	}
+
+	async function loadMore() {
+		const item = selected;
+		if (!item || loadingMore) return;
+		loadingMore = true;
+		try {
+			const data = await fetchReleases(item, 'Prowlarr', 100);
+			const previousCount = releases.length;
+			releases = mergeReleases(releases, data.releases);
+			canLoadMore = data.has_more;
+			if (releases.length === previousCount) toast.info('No additional Prowlarr releases found.');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Could not load more releases');
+		} finally {
+			loadingMore = false;
+		}
+	}
+
 	function clearFilters() {
 		releaseQuery = '';
 		quality = 'All quality';
 		releaseType = 'All types';
+		releaseSource = 'All sources';
 		sort = 'Best match';
 	}
 
@@ -240,16 +304,19 @@
 	{#if releases.length}
 		<section class="grid gap-2" aria-label="Torrent releases">
 			<div class="flex flex-wrap items-center justify-between gap-2"><div class="flex min-w-0 items-center gap-2"><h2 class="text-sm font-semibold">Available releases</h2><span class="font-mono text-xs font-normal text-muted-foreground">({filteredReleases.length})</span></div><div class="flex items-center gap-2"><span class="sr-only">Sort releases</span><Select.Root type="single" bind:value={sort} items={[{ value: 'Best match', label: 'Best match' }, { value: 'Name A–Z', label: 'Name A–Z' }]}><Select.Trigger class="flex h-8 w-28 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport><Select.Item value="Best match" label="Best match" class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">Best match</Select.Item><Select.Item value="Name A–Z" label="Name A–Z" class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">Name A–Z</Select.Item></Select.Viewport></Select.Content></Select.Portal></Select.Root></div></div>
-			<div class="flex flex-col gap-2 rounded-md border border-border/50 bg-muted/20 p-2 sm:flex-row sm:items-center"><div class="relative min-w-0 flex-1"><Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input bind:value={releaseQuery} placeholder="Filter releases…" class="h-8 pl-8 text-[13px]" aria-label="Filter releases by name" /></div><div class="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center"><span class="sr-only" id="quality-filter-label">Filter by quality</span><Select.Root type="single" bind:value={quality} items={qualityFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="quality-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each qualityFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root><span class="sr-only" id="format-filter-label">Filter by format</span><Select.Root type="single" bind:value={releaseType} items={typeFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="format-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each typeFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div></div>
+			<div class="flex flex-col gap-2 rounded-md border border-border/50 bg-muted/20 p-2 sm:flex-row sm:items-center"><div class="relative min-w-0 flex-1"><Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input bind:value={releaseQuery} placeholder="Filter releases…" class="h-8 pl-8 text-[13px]" aria-label="Filter releases by name" /></div><div class="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center"><span class="sr-only" id="quality-filter-label">Filter by quality</span><Select.Root type="single" bind:value={quality} items={qualityFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="quality-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each qualityFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root><span class="sr-only" id="format-filter-label">Filter by format</span><Select.Root type="single" bind:value={releaseType} items={typeFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="format-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each typeFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root><span class="sr-only" id="source-filter-label">Filter by source</span><Select.Root type="single" bind:value={releaseSource} items={sourceFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="source-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each sourceFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div></div>
 			{#if filteredReleases.length}
 			{#each filteredReleases as release (release.info_hash)}
 				<div class="group flex flex-col gap-2.5 rounded-md border border-border bg-card px-3 py-3 transition-colors duration-75 hover:border-foreground/25 sm:flex-row sm:items-center">
-					<div class="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-[11px] font-semibold text-muted-foreground">{release.source === 'Torrentio' ? 'TOR' : 'SRC'}</div><div class="w-full min-w-0 flex-1 overflow-hidden sm:w-0"><p class="w-full truncate text-sm font-semibold" title={release.title}>{release.title}</p><div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="min-w-0 truncate" title={release.name || release.source}>{release.name || release.source}</span><span aria-hidden="true">·</span><span class="shrink-0 font-mono">{release.info_hash.slice(0, 8)}…</span></div></div>
+					<div class="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-[11px] font-semibold text-muted-foreground">{release.source === 'Torrentio' ? 'TOR' : release.source === 'Prowlarr' ? 'PRO' : 'SRC'}</div><div class="w-full min-w-0 flex-1 overflow-hidden sm:w-0"><p class="w-full truncate text-sm font-semibold" title={release.title}>{release.title}</p><div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="min-w-0 truncate" title={release.name || release.source}>{release.name || release.source}</span><span class="shrink-0">{(release.sources ?? [release.source]).join(' + ')}</span><span aria-hidden="true">·</span><span class="shrink-0 font-mono">{release.info_hash.slice(0, 8)}…</span></div></div>
 					<div class="flex w-full shrink-0 gap-2 sm:w-auto"><Button class="h-8 min-w-0 flex-1 sm:flex-none" size="sm" variant="outline" title="Add to Real-Debrid" aria-label="Add to Real-Debrid" disabled={action !== null || added.has(release.info_hash)} onclick={() => addToRd(release)}>{#if added.has(release.info_hash)}<Check class="size-3.5" /><span>Added</span>{:else if action === `${release.info_hash}:rd`}<Loader2 class="size-3.5 animate-spin" /><span>Adding…</span>{:else}<Upload class="size-3.5" /><span>Add to RD</span>{/if}</Button><Button class="h-8 min-w-0 flex-1 sm:flex-none" size="sm" title="Download" aria-label="Download" disabled={action !== null} onclick={() => download(release)}>{#if action === `${release.info_hash}:download`}<Loader2 class="size-3.5 animate-spin" />{:else}<Download class="size-3.5" /><span>Download</span>{/if}</Button></div>
 				</div>
 			{/each}
 			{:else}<div class="rounded-md border border-dashed border-border px-6 py-10 text-center"><p class="text-sm font-medium">No releases match those filters.</p><p class="mt-1 text-xs text-muted-foreground">Try clearing a filter or searching for a different release name.</p><Button variant="ghost" size="sm" class="mt-3 h-8" onclick={clearFilters}>Clear filters</Button></div>{/if}
 		</section>
+		{#if canLoadMore}
+			<div class="flex justify-center"><Button variant="outline" size="sm" class="h-8" onclick={loadMore} disabled={loadingMore}>{#if loadingMore}<Loader2 class="size-3.5 animate-spin" /> Loading more…{:else}Load more Prowlarr results{/if}</Button></div>
+		{/if}
 	{/if}
 	{#if selected && loadingReleases}<div class="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-6 py-10 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Finding releases for {selected.title}…</div>{:else if selected && !releases.length && selected.media_type === 'movie'}<div class="rounded-md border border-dashed border-border px-6 py-10 text-center"><p class="text-sm font-medium">Ready to find releases for {selected.title}.</p><p class="mt-1 text-xs text-muted-foreground">Search results will appear here.</p></div>{/if}
 	</div>
