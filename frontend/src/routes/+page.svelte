@@ -621,9 +621,15 @@
 								Download Queue
 							</CardTitle>
 							{#if completedDownloads > 0}
-								<Button variant="ghost" size="xs" disabled={clearingCompleted} onclick={() => (clearCompletedDialogOpen = true)}>
-									{#if clearingCompleted}<Loader2 class="size-3 animate-spin" />{/if}
-									Clear completed
+								<Button
+									variant="outline"
+									size="xs"
+									class="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+									disabled={clearingCompleted}
+									onclick={() => (clearCompletedDialogOpen = true)}
+								>
+									{#if clearingCompleted}<Loader2 class="size-3 animate-spin" />{:else}<Trash2 class="size-3" />{/if}
+									<span>Clear completed</span>
 								</Button>
 							{/if}
 						</div>
