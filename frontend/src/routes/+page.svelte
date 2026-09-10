@@ -1,29 +1,38 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		CircleAlert,
+		WarningCircle,
 		Clipboard,
-		Inbox,
-		Link2,
-		Loader2,
+		Tray,
+		Link,
+		CircleNotch,
 		FolderOpen,
 		Pause,
 		Play,
-		RotateCcw,
-		Search,
-		Trash2,
+		Eye,
+		EyeSlash,
+		ArrowCounterClockwise,
+		ArrowFatLineUp,
+		MagnifyingGlass,
+		Trash,
 		Check,
 		X,
-		ChevronRight
-	} from '@lucide/svelte';
+		CaretRight
+	} from 'phosphor-svelte';
 
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Progress } from '$lib/components/ui/progress';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import StatusBadge from '$lib/components/status-badge.svelte';
+	import EmptyState from '$lib/components/empty-state.svelte';
+	import { statusKind } from '$lib/status';
+	import { formatBytes, formatAdaptiveMb, truncateMiddle, pathLabel } from '$lib/format';
 	import { toast } from 'svelte-sonner';
 	import SiteHeader from '$lib/components/site-header.svelte';
 
@@ -79,10 +88,13 @@
 	let authenticated = $state(false);
 	let authChecked = $state(false);
 	let password = $state('');
+	let showPassword = $state(false);
+	let capsLockOn = $state(false);
 	let loginError = $state('');
 	let loggingIn = $state(false);
 	let selectionDialogOpen = $state(false);
 	let selectionDownload = $state<Download | null>(null);
+	let selectionDismissedId = $state<string | null>(null);
 	let selectedFileIds = $state<number[]>([]);
 	let loadingSelection = $state(false);
 	let submittingSelection = $state(false);
@@ -103,7 +115,9 @@
 		Object.values(downloads).sort((a, b) => (b.added_time ?? 0) - (a.added_time ?? 0))
 	);
 	const activeDownloads = $derived(orderedDownloads.filter((d) => isActive(d.status)).length);
-	const completedDownloads = $derived(orderedDownloads.filter((d) => d.status === 'completed').length);
+	const completedDownloads = $derived(
+		orderedDownloads.filter((d) => d.status === 'completed').length
+	);
 	const failedDownloads = $derived(
 		orderedDownloads.filter((d) => d.status === 'failed' || d.status === 'rd_error').length
 	);
@@ -134,13 +148,6 @@
 		toast.success(message);
 	}
 
-	function formatBytes(bytes: number, decimals = 1) {
-		if (!bytes || bytes <= 0) return '0 B';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-		return `${parseFloat((bytes / 1024 ** unit).toFixed(Math.max(0, decimals)))} ${units[unit]}`;
-	}
-
 	function formatSpeed(d: Download) {
 		const mbps = (d.speed_mbps || 0) + (d.rd_speed_bps || 0) / 1024 / 1024;
 		if (mbps <= 0) return '';
@@ -152,18 +159,6 @@
 		if (d.size_mb > 0) return `${d.size_mb.toFixed(1)} MB`;
 		if (d.rd_total_size_bytes > 0) return formatBytes(d.rd_total_size_bytes);
 		return '';
-	}
-
-	function formatMb(value: number) {
-		return value > 0 ? `${value.toFixed(value >= 100 ? 0 : 1)} MB` : '—';
-	}
-
-	function statusLabel(value: string) {
-		const labels: Record<string, string> = {
-			processing_torrent: 'processing', waiting_rd: 'queued', rd_downloading: 'RD downloading',
-			unrestricting: 'preparing files', selecting_files: 'select files', added_to_rd: 'added to RD'
-		};
-		return labels[value] ?? value.replaceAll('_', ' ');
 	}
 
 	function classifyLink(value: string) {
@@ -178,31 +173,18 @@
 		return !['completed', 'added_to_rd', 'failed', 'cancelled', 'rd_error'].includes(status);
 	}
 
-	function statusClass(status: string) {
-		if (status === 'completed') return 'text-emerald-400';
-		if (status === 'added_to_rd') return 'text-cyan-400';
-		if (status === 'failed' || status === 'rd_error') return 'text-red-400';
-		if (status === 'paused' || status === 'cancelled') return 'text-zinc-400';
-		if (status === 'rd_downloading') return 'text-violet-300';
-		return 'text-sky-300';
-	}
-
-	function dotClass(status: string) {
-		if (status === 'completed') return 'bg-emerald-400';
-		if (status === 'added_to_rd') return 'bg-cyan-400';
-		if (status === 'failed' || status === 'rd_error') return 'bg-red-400';
-		if (status === 'paused' || status === 'cancelled') return 'bg-zinc-500';
-		if (status === 'rd_downloading') return 'bg-violet-400';
-		return 'bg-sky-400';
-	}
-
 	function barClass(status: string) {
-		if (status === 'completed') return '[&_[data-slot=progress-indicator]]:bg-emerald-400';
-		if (status === 'added_to_rd') return '[&_[data-slot=progress-indicator]]:bg-cyan-400';
-		if (status === 'failed' || status === 'rd_error') return '[&_[data-slot=progress-indicator]]:bg-red-400';
-		if (status === 'paused' || status === 'cancelled') return '[&_[data-slot=progress-indicator]]:bg-zinc-500';
-		if (status === 'rd_downloading') return '[&_[data-slot=progress-indicator]]:bg-violet-400';
-		return '[&_[data-slot=progress-indicator]]:bg-sky-400';
+		const kind = statusKind(status);
+		if (kind === 'destructive') return '[&_[data-slot=progress-indicator]]:bg-destructive';
+		return '[&_[data-slot=progress-indicator]]:bg-foreground';
+	}
+
+	function railClass(status: string) {
+		const kind = statusKind(status);
+		if (kind === 'success') return 'ledger-rail is-done';
+		if (kind === 'destructive') return 'ledger-rail is-failed';
+		if (status === 'paused') return 'ledger-rail is-paused';
+		return 'ledger-rail';
 	}
 
 	async function request(path: string, init: RequestInit = {}) {
@@ -221,14 +203,16 @@
 		loginError = '';
 		try {
 			await request('/api/auth/login', {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ password })
 			});
 			authenticated = true;
 			password = '';
 			connectWebSocket();
 		} catch (error) {
-			loginError = error instanceof Error ? error.message : 'Login failed';
+			const raw = error instanceof Error ? error.message : 'Login failed';
+			loginError = raw === 'Invalid password' ? 'Incorrect password. Try again.' : raw;
 		} finally {
 			loggingIn = false;
 		}
@@ -237,6 +221,27 @@
 	function handleLogout() {
 		socket?.close();
 		authenticated = false;
+	}
+
+	function handlePasswordKey(event: KeyboardEvent) {
+		capsLockOn = event.getModifierState?.('CapsLock') ?? false;
+	}
+
+	function handlePasswordPointer(event: MouseEvent) {
+		capsLockOn = event.getModifierState?.('CapsLock') ?? false;
+	}
+
+	function handlePasswordFocus(event: FocusEvent) {
+		// Focus events don't expose modifier state in most browsers, but try
+		// anyway — the click and key handlers cover the rest.
+		const query = (event as unknown as Partial<KeyboardEvent>).getModifierState;
+		if (typeof query === 'function') {
+			try {
+				capsLockOn = query.call(event, 'CapsLock');
+			} catch {
+				// Ignore; state stays as-is until a key or pointer event arrives.
+			}
+		}
 	}
 
 	function connectWebSocket() {
@@ -253,12 +258,26 @@
 			if (data.type === 'full_state') {
 				downloads = data.downloads;
 				initialLoading = false;
-				const pendingSelection = (Object.values(data.downloads) as Download[]).find((download) => download.status === 'selecting_files');
-				if (pendingSelection && !selectionDialogOpen) void openSelection(pendingSelection);
+				const pendingSelection = (Object.values(data.downloads) as Download[]).find(
+					(download) => download.status === 'selecting_files'
+				);
+				if (
+					pendingSelection &&
+					!selectionDialogOpen &&
+					selectionDismissedId !== pendingSelection.id
+				)
+					void openSelection(pendingSelection);
 			}
 			if (data.type === 'update') {
 				downloads[data.download.id] = data.download;
-				if (data.download.status === 'selecting_files' && !selectionDialogOpen) void openSelection(data.download);
+				if (data.download.status !== 'selecting_files' && selectionDismissedId === data.download.id)
+					selectionDismissedId = null;
+				if (
+					data.download.status === 'selecting_files' &&
+					!selectionDialogOpen &&
+					selectionDismissedId !== data.download.id
+				)
+					void openSelection(data.download);
 			}
 		};
 		socket.onclose = () => {
@@ -291,18 +310,27 @@
 
 	async function openSelection(download: Download) {
 		selectionDownload = download;
+		selectionDismissedId = null;
 		selectionDialogOpen = true;
 		loadingSelection = true;
 		try {
 			const data = await request(`/api/download/${download.id}/files`);
 			selectionDownload = { ...download, files: data.files ?? [] };
-			selectedFileIds = (data.files ?? []).filter((file: FileEntry) => file.selected).map((file: FileEntry) => file.id).filter((id: number | undefined): id is number => id != null);
+			selectedFileIds = (data.files ?? [])
+				.filter((file: FileEntry) => file.selected)
+				.map((file: FileEntry) => file.id)
+				.filter((id: number | undefined): id is number => id != null);
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'Could not load torrent files');
 			selectionDialogOpen = false;
 		} finally {
 			loadingSelection = false;
 		}
+	}
+
+	function dismissSelection() {
+		selectionDismissedId = selectionDownload?.id ?? null;
+		selectionDialogOpen = false;
 	}
 
 	function toggleFile(id?: number) {
@@ -317,7 +345,8 @@
 		submittingSelection = true;
 		try {
 			await request(`/api/download/${selectionDownload.id}/files`, {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ file_ids: selectedFileIds })
 			});
 			selectionDownload = { ...selectionDownload, status: 'starting' };
@@ -399,7 +428,13 @@
 		actionInFlight = `${id}:${action}`;
 		try {
 			await request(`/api/download/${id}/${action}`, { method: 'POST' });
-			showSuccess(action === 'pause' ? 'Download paused.' : action === 'resume' ? 'Download resumed.' : 'Download cancelled.');
+			showSuccess(
+				action === 'pause'
+					? 'Download paused.'
+					: action === 'resume'
+						? 'Download resumed.'
+						: 'Download cancelled.'
+			);
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'Action failed');
 		} finally {
@@ -411,13 +446,6 @@
 		return download.total_files > 1;
 	}
 
-	function formatAdaptiveMb(mb: number) {
-		if (!(mb > 0)) return '';
-		if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-		if (mb >= 100) return `${mb.toFixed(0)} MB`;
-		return `${mb.toFixed(1)} MB`;
-	}
-
 	function sizeLabel(download: Download) {
 		const total = download.total_size_mb || download.size_mb;
 		return (
@@ -427,36 +455,11 @@
 		);
 	}
 
-	function rowMeta(download: Download) {
-		const parts: string[] = [];
-		if (isMultipart(download)) {
-			parts.push(
-				download.status === 'completed'
-					? `${download.total_files} files`
-					: `${download.completed_files} of ${download.total_files} files`
-			);
-		}
-		const size = isMultipart(download)
-			? sizeLabel(download)
-			: formatAdaptiveMb(download.current_file_size_mb || download.size_mb) || sizeLabel(download);
-		if (size) parts.push(size);
-		const speed = formatSpeed(download);
-		if (speed) parts.push(speed);
-		if (download.seeders != null && (download.status === 'rd_downloading' || download.status === 'processing_torrent')) {
-			parts.push(`${download.seeders} seeders`);
-		}
-		return parts.join(' · ');
-	}
-
-	function showRightPercent(download: Download) {
-		return download.status !== 'completed' && isActive(download.status) && download.status !== 'paused';
-	}
-
-	function metaLine(download: Download) {
-		const base = rowMeta(download);
-		if (download.status === 'completed' || showRightPercent(download)) return base;
-		const percent = `${download.progress.toFixed(0)}%`;
-		return base ? `${base} · ${percent}` : percent;
+	function fileCountLabel(download: Download) {
+		if (!isMultipart(download)) return '';
+		return download.status === 'completed'
+			? `${download.total_files} files`
+			: `${download.completed_files}/${download.total_files} files`;
 	}
 
 	function toggleExpanded(id: string) {
@@ -483,20 +486,11 @@
 		return `${message}${download.error_code != null ? ` (RD error code ${download.error_code})` : ''}`;
 	}
 
-	function pathLabel(path?: string | null) {
-		return path ? path.replaceAll('\\', '/') : '';
-	}
-
-	function truncateMiddle(value: string, max = 40) {
-		if (value.length <= max) return value;
-		const head = Math.ceil((max - 1) / 2);
-		const tail = Math.floor((max - 1) / 2);
-		return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
-	}
-
 	async function clearDownload(id: string, deleteLocal = false) {
 		try {
-			const data = await request(`/api/download/${id}${deleteLocal ? '?delete_local=true' : ''}`, { method: 'DELETE' });
+			const data = await request(`/api/download/${id}${deleteLocal ? '?delete_local=true' : ''}`, {
+				method: 'DELETE'
+			});
 			delete downloads[id];
 			if (data.warnings?.length) showError(data.warnings.join(' '));
 		} catch (error) {
@@ -543,16 +537,18 @@
 	}
 
 	onMount(() => {
-		request('/api/auth/session').then((data) => {
-			authenticated = data.authenticated;
-			authChecked = true;
-			if (authenticated) {
-				connectWebSocket();
-			}
-		}).catch(() => {
-			authChecked = true;
-			loginError = 'Unable to contact the server.';
-		});
+		request('/api/auth/session')
+			.then((data) => {
+				authenticated = data.authenticated;
+				authChecked = true;
+				if (authenticated) {
+					connectWebSocket();
+				}
+			})
+			.catch(() => {
+				authChecked = true;
+				loginError = 'Unable to contact the server.';
+			});
 		return () => {
 			socket?.close();
 		};
@@ -566,14 +562,34 @@
 
 {#if authChecked && authenticated}
 	<Tooltip.Provider>
-	<main class="min-h-screen bg-background text-foreground">
-		<SiteHeader onLogout={handleLogout} />
+		<main class="min-h-dvh bg-background text-foreground">
+			<SiteHeader onLogout={handleLogout} />
 
-		<div class="mx-auto w-full max-w-6xl px-3 py-4 sm:px-8 sm:py-6">
+			<div class="page-shell">
+				<div class="page-heading">
+					<div>
+						<h1 class="text-[22px] leading-7 font-semibold tracking-tight text-foreground">
+							Downloads
+						</h1>
+						<p class="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+							{#if orderedDownloads.length}
+								{activeDownloads} active / {completedDownloads} done{#if failedDownloads}
+									/ {failedDownloads} failed{/if}
+							{:else}
+								Paste a magnet or direct link to start.
+							{/if}
+						</p>
+					</div>
+				</div>
 
-			<!-- add download -->
-			<Card class="mt-4 gap-0 rounded-md py-0">
-				<CardContent class="px-3 py-3 sm:py-2">
+				<!-- add download -->
+				<div class="console-strip px-3 py-3 sm:px-5 sm:py-4">
+					<div class="mb-3 flex items-center justify-between gap-3">
+						<p class="text-sm font-semibold tracking-tight text-foreground">New download</p>
+						<span class="shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+							>MAGNET / HTTP</span
+						>
+					</div>
 					<form
 						class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
 						onsubmit={(e) => {
@@ -582,377 +598,698 @@
 						}}
 					>
 						<div class="relative min-w-0 flex-1">
-							<Link2 class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+							<Link
+								class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
+							/>
 							<Input
 								id="link-input"
-								class={`h-10 pr-16 pl-9 font-mono text-[13px] ${linkType === 'invalid' ? 'border-red-500/50' : ''}`}
+								class={`h-8 border-transparent bg-transparent pr-20 pl-10 font-mono text-[13px] placeholder:font-sans placeholder:text-[13px] ${linkType === 'invalid' ? '!border-destructive/60' : ''}`}
 								bind:value={link}
-								placeholder="Paste magnet or direct link"
+								placeholder="Paste magnet or link…"
 								aria-label="Magnet or direct link"
+								aria-invalid={linkType === 'invalid' || !!formMessage}
+								aria-describedby="link-help"
 								autocomplete="off"
 								spellcheck="false"
 							/>
 							<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
-								<button type="button" onclick={pasteLink} aria-label="Paste from clipboard" title="Paste from clipboard" class="grid size-6 cursor-pointer place-items-center rounded text-foreground/60 transition hover:text-foreground">
+								<button
+									type="button"
+									onclick={pasteLink}
+									aria-label="Paste from clipboard"
+									title="Paste from clipboard"
+									class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								>
 									<Clipboard class="size-3.5" />
 								</button>
 								{#if link}
-									<button type="button" onclick={clearLink} aria-label="Clear link" class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground transition hover:text-foreground">
+									<button
+										type="button"
+										onclick={clearLink}
+										aria-label="Clear link"
+										class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+									>
 										<X class="size-3.5" />
 									</button>
 								{/if}
 							</div>
 						</div>
-						<Button type="submit" class="h-10 w-full shrink-0 disabled:opacity-30 sm:w-auto" disabled={!canAdd || adding}>
-							{#if adding}<Loader2 class="size-4 animate-spin" /> Adding…{:else}Add{/if}
+						<Button
+							type="submit"
+							class="h-8 w-full shrink-0 px-4 text-[13px] sm:w-auto"
+							disabled={!canAdd || adding}
+						>
+							{#if adding}<CircleNotch class="size-3.5 animate-spin" />{/if}Add download
 						</Button>
 					</form>
-					{#if formMessage}
-						<p class="mt-2 text-xs text-red-400" role="alert">{formMessage}</p>
-					{:else if linkType === 'invalid'}
-						<p class="mt-2 text-xs text-red-400" role="alert">Enter a valid magnet or http(s) link.</p>
-					{/if}
-				</CardContent>
-			</Card>
+					<div class="mt-3 flex min-h-4 flex-wrap items-center gap-x-3 gap-y-1">
+						{#if linkType === 'magnet'}
+							<span class="font-mono text-[11px] tracking-tight text-muted-foreground"
+								>magnet detected</span
+							>
+						{:else if linkType === 'direct'}
+							<span class="font-mono text-[11px] tracking-tight text-muted-foreground"
+								>direct link detected</span
+							>
+						{/if}
+						{#if formMessage}
+							<p id="link-help" class="text-[13px] text-destructive" role="alert">{formMessage}</p>
+						{:else if linkType === 'invalid'}
+							<p id="link-help" class="text-[13px] text-destructive" role="alert">
+								Enter a valid magnet or http(s) link.
+							</p>
+						{:else}
+							<p id="link-help" class="text-[13px] text-muted-foreground">
+								Sent to Real-Debrid first, then pulled to this machine.
+							</p>
+						{/if}
+					</div>
+				</div>
 
-			<!-- queue -->
-			<section aria-labelledby="downloads-heading" class="mt-4">
-				<Card class="gap-0 rounded-md py-0">
-					<CardHeader class="border-b border-border/60 px-3 py-3 sm:px-4">
-						<div class="flex flex-wrap items-center justify-between gap-2">
-							<CardTitle id="downloads-heading" class="text-sm font-semibold text-foreground">
-								Download Queue
-							</CardTitle>
-							{#if completedDownloads > 0}
-								<Button
-									variant="outline"
-									size="xs"
-									class="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
-									disabled={clearingCompleted}
-									onclick={() => (clearCompletedDialogOpen = true)}
+				<!-- queue -->
+				<section aria-labelledby="downloads-heading" aria-busy={initialLoading}>
+					<div class="ledger">
+						<div class="border-b border-border px-4 py-4 sm:px-5">
+							<div class="section-heading flex-wrap">
+								<h2
+									id="downloads-heading"
+									class="text-sm font-semibold tracking-tight text-foreground"
 								>
-									{#if clearingCompleted}<Loader2 class="size-3 animate-spin" />{:else}<Trash2 class="size-3" />{/if}
-									<span>Clear completed</span>
-								</Button>
-							{/if}
-						</div>
-						<div class="mt-2.5 grid items-center gap-2 sm:grid-cols-5">
-							<div class="relative min-w-0 sm:col-span-3">
-								<Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-								<Input bind:value={query} placeholder="Search downloads..." aria-label="Search downloads" class="h-8 pl-8 text-[13px]" />
-							</div>
-							<div class="flex items-center gap-1 rounded-lg border border-border/50 bg-muted p-1 sm:col-span-2" role="group" aria-label="Filter downloads">
-								{#each [{ k: 'all', label: 'All', n: orderedDownloads.length }, { k: 'active', label: 'Active', n: activeDownloads }, { k: 'completed', label: 'Completed', n: completedDownloads }, { k: 'failed', label: 'Failed', n: failedDownloads }] as f}
-									<button
-										type="button"
-										aria-pressed={activeFilter === f.k}
-										onclick={() => (activeFilter = f.k as typeof activeFilter)}
-										class={`flex h-6 flex-1 cursor-pointer items-center justify-center gap-1 rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap transition-colors duration-75 ${activeFilter === f.k ? 'bg-foreground/10 text-foreground shadow-sm' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'}`}
+									Queue <span class="font-mono text-xs font-normal text-muted-foreground"
+										>({orderedDownloads.length})</span
 									>
-										<span class="leading-none">{f.label} <span class="relative -top-px font-mono text-[10px] opacity-70">{f.n}</span></span>
-									</button>
-								{/each}
+								</h2>
+								{#if completedDownloads > 0}
+									<Button
+										variant="ghost"
+										size="xs"
+										class="h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-destructive"
+										disabled={clearingCompleted}
+										onclick={() => (clearCompletedDialogOpen = true)}
+									>
+										{#if clearingCompleted}<CircleNotch class="size-3 animate-spin" />{:else}<Trash
+												class="size-3"
+											/>{/if}
+										<span>Clear done</span>
+									</Button>
+								{/if}
+							</div>
+							<div class="mt-4 grid items-center gap-3 lg:grid-cols-5">
+								<div class="relative min-w-0 lg:col-span-3">
+									<MagnifyingGlass
+										class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
+									/>
+									<Input
+										bind:value={query}
+										placeholder="Search downloads…"
+										aria-label="Search downloads"
+										class="h-8 border-transparent bg-muted/60 pr-8 pl-9 text-[13px] placeholder:text-[13px]"
+									/>
+									{#if query}
+										<button
+											type="button"
+											onclick={() => (query = '')}
+											aria-label="Clear search"
+											class="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+										>
+											<X class="size-3.5" />
+										</button>
+									{/if}
+								</div>
+								<Tabs.Root
+									value={activeFilter}
+									onValueChange={(v) => (activeFilter = v as typeof activeFilter)}
+									class="w-full lg:col-span-2"
+								>
+									<Tabs.List class="grid h-7 w-full grid-cols-4 bg-transparent p-0">
+										<Tabs.Trigger value="all" class="min-w-0 px-1 text-xs tabular-nums"
+											>All <span class="font-mono text-[11px] opacity-70"
+												>{orderedDownloads.length}</span
+											></Tabs.Trigger
+										>
+										<Tabs.Trigger value="active" class="min-w-0 px-1 text-xs tabular-nums"
+											>Active <span class="font-mono text-[11px] opacity-70">{activeDownloads}</span
+											></Tabs.Trigger
+										>
+										<Tabs.Trigger value="completed" class="min-w-0 px-1 text-xs tabular-nums"
+											>Done <span class="font-mono text-[11px] opacity-70"
+												>{completedDownloads}</span
+											></Tabs.Trigger
+										>
+										<Tabs.Trigger value="failed" class="min-w-0 px-1 text-xs tabular-nums"
+											>Failed <span class="font-mono text-[11px] opacity-70">{failedDownloads}</span
+											></Tabs.Trigger
+										>
+									</Tabs.List>
+								</Tabs.Root>
 							</div>
 						</div>
-					</CardHeader>
-
-					<CardContent class="px-3 pb-2 sm:px-4">
 						{#if initialLoading}
 							<div class="grid gap-1 py-2" aria-label="Loading downloads">
 								{#each [0, 1, 2] as i}
 									<div class="py-2">
-										<div class="h-3.5 w-2/3 animate-pulse rounded bg-muted"></div>
-										<div class="mt-2 h-[5px] w-full animate-pulse rounded bg-muted"></div>
+										<Skeleton class="h-3.5 w-2/3" />
+										<Skeleton class="mt-2 h-[5px] w-full" />
 									</div>
 								{/each}
 							</div>
 						{:else if orderedDownloads.length === 0}
-							<div class="flex flex-col items-center px-6 py-10 text-center">
-								<Inbox class="size-6 text-muted-foreground" />
-								<p class="mt-3 text-sm text-muted-foreground">Queue is empty</p>
-							</div>
+							<EmptyState
+								icon={Tray}
+								title="Queue is empty"
+								hint="Paste a link above — it will show up here with live progress."
+							/>
 						{:else if filteredDownloads.length === 0}
-							<div class="px-6 py-10 text-center text-sm text-muted-foreground">No matches</div>
+							<EmptyState
+								icon={MagnifyingGlass}
+								title="No matches"
+								hint="Try a different search or filter."
+							/>
 						{:else}
-							<ul class="divide-y divide-border/30">
+							<ul>
 								{#each filteredDownloads as download (download.id)}
-									<li class="group py-3.5">
-										<div class="flex items-start gap-1.5">
-											<div class="flex h-8 w-5 shrink-0 items-center justify-center">
-										{#if isMultipart(download)}
-													<button type="button" class="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground" aria-label={`${expandedDownloads[download.id] ? 'Collapse' : 'Expand'} file list`} aria-expanded={expandedDownloads[download.id] ?? false} onclick={() => toggleExpanded(download.id)}>
-															<ChevronRight class={`size-3.5 transition-transform ${expandedDownloads[download.id] ? 'rotate-90' : ''}`} />
-													</button>
-												{:else}
-													<span class="size-5 shrink-0"></span>
-												{/if}
-													</div>
-
-											<div class="min-w-0 flex-1">
-												<div class="flex items-center justify-between gap-3">
-															<div class="flex min-w-0 items-center gap-1.5">
-																<p class="min-w-0 truncate text-sm font-semibold" title={download.name}>{download.name}</p>
-																<span class={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium whitespace-nowrap capitalize ${statusClass(download.status)}`}>
-																	<span class={`size-1.5 rounded-full ${dotClass(download.status)}`}></span>
-																	{statusLabel(download.status)}
-																</span>
-																{#if download.original_link}
-																	<Tooltip.Root>
-																		<Tooltip.Trigger>
-																			{#snippet child({ props })}
-																				<Button {...props} variant="ghost" size="icon-sm" class="hidden size-6 shrink-0 group-hover:inline-flex" aria-label={download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'} onclick={() => copyOriginalLink(download)}>
-																					{#if copiedLinkId === download.id}<Check class="size-3.5 text-emerald-400" />{:else}<Link2 class="size-3.5" />{/if}
-																				</Button>
-																			{/snippet}
-																		</Tooltip.Trigger>
-																		<Tooltip.Content>{download.type === 'magnet' ? 'Copy magnet link' : 'Copy download link'}</Tooltip.Content>
-																	</Tooltip.Root>
-																{/if}
-															</div>
-													<div class="flex shrink-0 items-center gap-0.5">
-														{#if !isActive(download.status)}
-															{#if download.status === 'failed' || download.status === 'rd_error'}
-																<Tooltip.Root>
-																	<Tooltip.Trigger>
-																		{#snippet child({ props })}
-															<Button {...props} variant="ghost" size="icon-sm" aria-label="Retry download" onclick={() => downloadAction(download.id, 'resume')}><RotateCcw class="size-3.5" /></Button>
-																		{/snippet}
-																	</Tooltip.Trigger>
-																	<Tooltip.Content>Retry</Tooltip.Content>
-																</Tooltip.Root>
-															{/if}
-															<Tooltip.Root>
-																<Tooltip.Trigger>
-																	{#snippet child({ props })}
-										{#if download.status === 'completed' && download.output_path}
-															<Tooltip.Root>
-																<Tooltip.Trigger>
-																	{#snippet child({ props })}
-																		<Button {...props} variant="ghost" size="icon-sm" aria-label="Copy save path" onclick={() => copySavePath(download)}>{#if copiedPathId === download.id}<Check class="size-3.5 text-emerald-400" />{:else}<FolderOpen class="size-3.5" />{/if}</Button>
-																	{/snippet}
-																</Tooltip.Trigger>
-																<Tooltip.Content>Copy save path</Tooltip.Content>
-															</Tooltip.Root>
-														{/if}
-														<Button {...props} variant="ghost" size="icon-sm" aria-label="Remove download" onclick={() => requestDelete(download.id)}><Trash2 class="size-3.5" /></Button>
-																	{/snippet}
-																</Tooltip.Trigger>
-																<Tooltip.Content>Remove</Tooltip.Content>
-															</Tooltip.Root>
-								{:else}
-									{#if download.status === 'downloading'}
-											<Tooltip.Root>
-																		<Tooltip.Trigger>
-																			{#snippet child({ props })}
-																				<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Pause download" onclick={() => downloadAction(download.id, 'pause')}><Pause class="size-3.5" /></Button>
-																			{/snippet}
-																		</Tooltip.Trigger>
-																		<Tooltip.Content>Pause</Tooltip.Content>
-																	</Tooltip.Root>
-									{:else if download.status === 'paused'}
-											<Tooltip.Root>
-																		<Tooltip.Trigger>
-																			{#snippet child({ props })}
-																				<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Resume download" onclick={() => downloadAction(download.id, 'resume')}><Play class="size-3.5" /></Button>
-																			{/snippet}
-																		</Tooltip.Trigger>
-																		<Tooltip.Content>Resume</Tooltip.Content>
-																	</Tooltip.Root>
-									{/if}
-															<Tooltip.Root>
-																<Tooltip.Trigger>
-																	{#snippet child({ props })}
-															<Button {...props} variant="ghost" size="icon-sm" disabled={actionInFlight?.startsWith(`${download.id}:`)} aria-label="Cancel download" onclick={() => requestCancel(download.id)}><X class="size-4" /></Button>
-																	{/snippet}
-																</Tooltip.Trigger>
-																<Tooltip.Content>Cancel</Tooltip.Content>
-															</Tooltip.Root>
-														{/if}
-													</div>
-												</div>
-
-										<div class="mt-1 flex items-baseline justify-between gap-3">
-											<p class="min-w-0 truncate font-mono text-xs text-muted-foreground">{metaLine(download)}</p>
-											{#if showRightPercent(download)}
-												<span class="w-11 shrink-0 text-right font-mono text-xs text-foreground">{download.progress.toFixed(0)}%</span>
+									<li class="ledger-row row-enter group">
+										<div class="flex items-center gap-1.5">
+											{#if isMultipart(download)}
+												<button
+													type="button"
+													class="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+													aria-label={`${expandedDownloads[download.id] ? 'Collapse' : 'Expand'} file list`}
+													aria-expanded={expandedDownloads[download.id] ?? false}
+													onclick={() => toggleExpanded(download.id)}
+												>
+													<CaretRight
+														class={`size-3.5 transition-transform duration-200 ${expandedDownloads[download.id] ? 'rotate-90' : ''}`}
+													/>
+												</button>
+											{:else}
+												<span class="size-6 shrink-0" aria-hidden="true"></span>
 											{/if}
-										</div>
-										{#if isActive(download.status)}
-											<div class="mt-1.5">
-												<Progress value={download.progress} max={100} class={`h-[5px] flex-1 ${barClass(download.status)}`} aria-label={`${download.name} progress`} />
-											</div>
-										{/if}
-									{#if isMultipart(download) && expandedDownloads[download.id]}
-										{#if download.status === 'completed'}
-											<div class="mt-1.5 grid gap-1">
-												{#each download.files ?? [] as file}
-													<div class="flex items-center gap-2 text-xs">
-														<Check class="size-3.5 shrink-0 text-emerald-400" />
-														<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.name}>{fileName(file)}</span>
-														<span class="ml-auto shrink-0 font-mono text-muted-foreground">{fileSize(file)}</span>
-													</div>
-												{/each}
-											</div>
-										{:else}
-											<div class="mt-1.5 grid gap-1">
-												{#each download.files ?? [] as file}
-													<div>
-														<div class="flex items-baseline gap-2 text-xs">
-															<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.name}>{fileName(file)}</span>
-															<span class="ml-auto shrink-0 font-mono text-muted-foreground">{fileSize(file)}{#if download.status !== 'rd_downloading'} · {(file.progress ?? 0).toFixed(0)}%{/if}</span>
-														</div>
-														{#if download.status !== 'rd_downloading'}
-															<Progress value={file.progress ?? 0} max={100} class={`mt-0.5 h-[3px] ${barClass(file.status ?? download.status)}`} aria-label={`${fileName(file)} progress`} />
-														{/if}
-													</div>
-												{/each}
-											</div>
-										{/if}
-									{/if}
-										{#if download.output_path}
-											<p class="mt-1.5 truncate font-mono text-[11px] text-muted-foreground/50" title={pathLabel(download.output_path)}>{truncateMiddle(pathLabel(download.output_path))}</p>
-										{/if}
-
-													{#if download.error_message && download.status !== 'cancelled'}
-															<Alert.Root variant="destructive" class="mt-2">
-																<Alert.Description class="text-xs">{errorLabel(download)}</Alert.Description>
-													</Alert.Root>
+											<div class="flex min-w-0 flex-1 items-center gap-1">
+												<p
+													class="min-w-0 shrink line-clamp-2 text-sm leading-5 font-medium tracking-tight"
+													title={download.name}
+												>
+													{download.name}
+												</p>
+												{#if download.original_link}
+													<Tooltip.Root>
+														<Tooltip.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	{...props}
+																	variant="ghost"
+																	size="icon-sm"
+																	class="size-6 shrink-0 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+																	aria-label={download.type === 'magnet'
+																		? 'Copy magnet link'
+																		: 'Copy download link'}
+																	onclick={() => copyOriginalLink(download)}
+																>
+																	{#if copiedLinkId === download.id}<Check
+																			class="size-3.5"
+																		/>{:else}<Link class="size-3.5" />{/if}
+																</Button>
+															{/snippet}
+														</Tooltip.Trigger>
+														<Tooltip.Content
+															>{download.type === 'magnet'
+																? 'Copy magnet link'
+																: 'Copy download link'}</Tooltip.Content
+														>
+													</Tooltip.Root>
 												{/if}
 											</div>
+											<StatusBadge status={download.status} class="shrink-0" />
+											<div class="flex shrink-0 items-center gap-0.5">
+												{#if !isActive(download.status)}
+													{#if download.status === 'failed' || download.status === 'rd_error'}
+														<Tooltip.Root>
+															<Tooltip.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		{...props}
+																		variant="ghost"
+																		size="icon-sm"
+																		class="size-6"
+																		aria-label="Retry download"
+																		onclick={() => downloadAction(download.id, 'resume')}
+																		><ArrowCounterClockwise class="size-3.5" /></Button
+																	>
+																{/snippet}
+															</Tooltip.Trigger>
+															<Tooltip.Content>Retry</Tooltip.Content>
+														</Tooltip.Root>
+													{/if}
+													{#if download.status === 'completed' && download.output_path}
+														<Tooltip.Root>
+															<Tooltip.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		{...props}
+																		variant="ghost"
+																		size="icon-sm"
+																		class="size-6"
+																		aria-label="Copy save path"
+																		onclick={() => copySavePath(download)}
+																		>{#if copiedPathId === download.id}<Check
+																				class="size-3.5"
+																			/>{:else}<FolderOpen class="size-3.5" />{/if}</Button
+																	>
+																{/snippet}
+															</Tooltip.Trigger>
+															<Tooltip.Content>Copy save path</Tooltip.Content>
+														</Tooltip.Root>
+													{/if}
+													<Tooltip.Root>
+														<Tooltip.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	{...props}
+																	variant="ghost"
+																	size="icon-sm"
+																	class="size-6"
+																	aria-label="Remove download"
+																	onclick={() => requestDelete(download.id)}
+																	><Trash class="size-3.5" /></Button
+																>
+															{/snippet}
+														</Tooltip.Trigger>
+														<Tooltip.Content>Remove</Tooltip.Content>
+													</Tooltip.Root>
+												{:else}
+													{#if download.status === 'selecting_files'}
+														<Tooltip.Root>
+															<Tooltip.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		{...props}
+																		variant="ghost"
+																		size="icon-sm"
+																		class="size-8"
+																		aria-label="Choose files"
+																		onclick={() => void openSelection(download)}
+																		><FolderOpen class="size-3.5" /></Button
+																	>
+																{/snippet}
+															</Tooltip.Trigger>
+															<Tooltip.Content>Choose files</Tooltip.Content>
+														</Tooltip.Root>
+													{/if}
+													{#if download.status === 'downloading'}
+														<Tooltip.Root>
+															<Tooltip.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		{...props}
+																		variant="ghost"
+																		size="icon-sm"
+																		class="size-6"
+																		disabled={actionInFlight?.startsWith(`${download.id}:`)}
+																		aria-label="Pause download"
+																		onclick={() => downloadAction(download.id, 'pause')}
+																		><Pause class="size-3.5" /></Button
+																	>
+																{/snippet}
+															</Tooltip.Trigger>
+															<Tooltip.Content>Pause</Tooltip.Content>
+														</Tooltip.Root>
+													{:else if download.status === 'paused'}
+														<Tooltip.Root>
+															<Tooltip.Trigger>
+																{#snippet child({ props })}
+																	<Button
+																		{...props}
+																		variant="ghost"
+																		size="icon-sm"
+																		class="size-6"
+																		disabled={actionInFlight?.startsWith(`${download.id}:`)}
+																		aria-label="Resume download"
+																		onclick={() => downloadAction(download.id, 'resume')}
+																		><Play class="size-3.5" /></Button
+																	>
+																{/snippet}
+															</Tooltip.Trigger>
+															<Tooltip.Content>Resume</Tooltip.Content>
+														</Tooltip.Root>
+													{/if}
+													<Tooltip.Root>
+														<Tooltip.Trigger>
+															{#snippet child({ props })}
+																<Button
+																	{...props}
+																	variant="ghost"
+																	size="icon-sm"
+																	class="size-6"
+																	disabled={actionInFlight?.startsWith(`${download.id}:`)}
+																	aria-label="Cancel download"
+																	onclick={() => requestCancel(download.id)}
+																	><X class="size-3.5" /></Button
+																>
+															{/snippet}
+														</Tooltip.Trigger>
+														<Tooltip.Content>Cancel</Tooltip.Content>
+													</Tooltip.Root>
+												{/if}
+											</div>
+										</div>
+										<div class="pl-[30px]">
+											<div
+												class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums text-muted-foreground"
+											>
+												{#if fileCountLabel(download)}<span>{fileCountLabel(download)}</span>{/if}
+												{#if sizeLabel(download)}<span>{sizeLabel(download)}</span>{/if}
+												{#if formatSpeed(download)}<span class="text-foreground"
+														>{formatSpeed(download)}</span
+													>{/if}
+												{#if download.seeders != null && (download.status === 'rd_downloading' || download.status === 'processing_torrent')}
+													<span>{download.seeders} seeders</span>
+												{/if}
+												<span
+													class="ml-auto font-mono text-xs font-medium text-foreground tabular-nums"
+													>{download.progress.toFixed(0)}%</span
+												>
+											</div>
+											{#if isActive(download.status)}
+												<div class={railClass(download.status)} aria-hidden="true">
+													<span style={`width: ${Math.min(Math.max(download.progress, 0), 100)}%`}
+													></span>
+												</div>
+											{/if}
+											{#if isMultipart(download) && expandedDownloads[download.id]}
+												{#if download.status === 'completed'}
+													<ul
+														aria-label="Downloaded files"
+														class="mt-3 grid gap-0.5 rounded-lg border border-border px-3 py-2"
+													>
+														{#each download.files ?? [] as file}
+															<li class="flex items-center gap-2 py-1 text-[11px]">
+																<Check class="size-3.5 shrink-0 text-muted-foreground" />
+																<span
+																	class="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+																	title={file.name}>{fileName(file)}</span
+																>
+																<span class="shrink-0 font-mono text-muted-foreground tabular-nums"
+																	>{fileSize(file)}</span
+																>
+															</li>
+														{/each}
+													</ul>
+												{:else}
+													<ul
+														aria-label="Download file progress"
+														class="mt-3 grid gap-2.5 rounded-lg border border-border px-3 py-2.5"
+													>
+														{#each download.files ?? [] as file}
+															<li>
+																<div class="flex items-baseline gap-2 text-[11px]">
+																	<span
+																		class="min-w-0 flex-1 line-clamp-2 font-mono text-muted-foreground"
+																		title={file.name}>{fileName(file)}</span
+																	>
+																	<span
+																		class="shrink-0 font-mono text-muted-foreground tabular-nums"
+																		>{fileSize(file)}{#if download.status !== 'rd_downloading'}
+																			· {(file.progress ?? 0).toFixed(0)}%{/if}</span
+																	>
+																</div>
+																{#if download.status !== 'rd_downloading'}
+																	<Progress
+																		value={file.progress ?? 0}
+																		max={100}
+																		class={`mt-1.5 h-[3px] ${barClass(file.status ?? download.status)}`}
+																		aria-label={`${fileName(file)} progress: ${(file.progress ?? 0).toFixed(0)} percent`}
+																	/>
+																{/if}
+															</li>
+														{/each}
+													</ul>
+												{/if}
+											{/if}
+											{#if download.output_path}
+												<p
+													class="mt-1.5 truncate font-mono text-[11px] text-muted-foreground/70"
+													title={pathLabel(download.output_path)}
+												>
+													{truncateMiddle(pathLabel(download.output_path), 56)}
+												</p>
+											{/if}
+
+											{#if download.error_message && download.status !== 'cancelled'}
+												<Alert.Root variant="destructive" class="mt-2.5 border-destructive/30">
+													<Alert.Description
+														class="flex items-start gap-1.5 text-xs leading-relaxed"
+														>{errorLabel(download)}</Alert.Description
+													>
+												</Alert.Root>
+											{/if}
 										</div>
 									</li>
 								{/each}
 							</ul>
 						{/if}
-					</CardContent>
-				</Card>
-			</section>
-		</div>
-
-	</main>
-<Dialog.Root bind:open={clearCompletedDialogOpen}>
-	<Dialog.Content class="sm:max-w-[380px]">
-		<div class="px-5 pt-5 pr-12 pb-4">
-			<Dialog.Header>
-				<div class="flex items-start gap-3">
-					<span class="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
-						<Trash2 class="size-4" />
-					</span>
-					<div class="grid gap-1 pt-0.5">
-						<Dialog.Title>Clear completed?</Dialog.Title>
-						<Dialog.Description>{completedDownloads} completed {completedDownloads === 1 ? 'download' : 'downloads'} will be removed from the queue. Local files are kept.</Dialog.Description>
 					</div>
-				</div>
-			</Dialog.Header>
-		</div>
-		<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
-			<Dialog.Close>
-				{#snippet child({ props })}
-					<Button variant="outline" size="sm" class="h-8" {...props}>Keep</Button>
-				{/snippet}
-			</Dialog.Close>
-			<Button size="sm" class="h-8" onclick={confirmClearCompleted}>Clear completed</Button>
-		</Dialog.Footer>
-	</Dialog.Content>
-</Dialog.Root>
-
-<Dialog.Root bind:open={cancelDialogOpen}>
-	<Dialog.Content class="sm:max-w-[380px]">
-		<div class="px-5 pt-5 pr-12 pb-4">
-			<Dialog.Header>
-				<div class="flex items-start gap-3">
-					<span class="grid size-9 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive">
-						<CircleAlert class="size-4" />
-					</span>
-					<div class="grid gap-1 pt-0.5">
-						<Dialog.Title>Cancel download?</Dialog.Title>
-						<Dialog.Description>This stops the download but keeps it in the list.</Dialog.Description>
-					</div>
-				</div>
-			</Dialog.Header>
-		</div>
-		<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
-			<Dialog.Close>
-				{#snippet child({ props })}
-					<Button variant="outline" size="sm" class="h-8" {...props}>Keep</Button>
-				{/snippet}
-			</Dialog.Close>
-			<Button variant="destructive" size="sm" class="h-8" onclick={confirmCancel}>Cancel download</Button>
-		</Dialog.Footer>
-	</Dialog.Content>
-</Dialog.Root>
-
-	<Dialog.Root bind:open={selectionDialogOpen} onOpenChange={(open) => {
-		if (!open && selectionDownload?.status === 'selecting_files') selectionDialogOpen = true;
-	}}>
-		<Dialog.Content showCloseButton={false} class="gap-4 p-6 sm:max-w-[560px]">
-			<Dialog.Header>
-				<Dialog.Title>Select files for {selectionDownload?.name ?? 'torrent'}</Dialog.Title>
-				<Dialog.Description>You must choose at least one file before this torrent can start.</Dialog.Description>
-			</Dialog.Header>
-			<div class="max-h-[55vh] overflow-y-auto">
-				{#if loadingSelection}
-					<div class="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Loading files…</div>
-				{:else}
-					<div class="grid gap-1">
-						{#each selectionDownload?.files ?? [] as file}
-							<label class="flex cursor-pointer items-center gap-3 rounded px-2 py-2 text-sm hover:bg-muted">
-								<input type="checkbox" checked={file.id != null && selectedFileIds.includes(file.id)} onchange={() => toggleFile(file.id)} />
-								<span class="min-w-0 flex-1 truncate" title={file.name}>{fileName(file)}</span>
-								<span class="shrink-0 font-mono text-xs text-muted-foreground">{fileSize(file)}</span>
-							</label>
-						{/each}
-					</div>
-				{/if}
+				</section>
 			</div>
-			<Dialog.Footer>
-				<Button size="sm" disabled={loadingSelection || submittingSelection || !selectedFileIds.length} onclick={submitSelection}>{submittingSelection ? 'Starting…' : `Start with ${selectedFileIds.length} selected`}</Button>
-			</Dialog.Footer>
-		</Dialog.Content>
-	</Dialog.Root>
+		</main>
+		<Dialog.Root bind:open={clearCompletedDialogOpen}>
+			<Dialog.Content class="sm:max-w-[380px]">
+				<div class="px-5 pt-5 pr-12 pb-4">
+					<Dialog.Header>
+						<div class="flex items-start gap-3">
+							<span
+								class="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground"
+							>
+								<Trash class="size-3.5" />
+							</span>
+							<div class="grid gap-1 pt-0.5">
+								<Dialog.Title>Clear completed?</Dialog.Title>
+								<Dialog.Description
+									>{completedDownloads} completed {completedDownloads === 1
+										? 'download'
+										: 'downloads'} will be removed from the queue. Local files are kept.</Dialog.Description
+								>
+							</div>
+						</div>
+					</Dialog.Header>
+				</div>
+				<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+					<Dialog.Close>
+						{#snippet child({ props })}
+							<Button variant="outline" size="sm" class="h-8" {...props}>Keep</Button>
+						{/snippet}
+					</Dialog.Close>
+					<Button size="sm" class="h-8" onclick={confirmClearCompleted}>Clear completed</Button>
+				</Dialog.Footer>
+			</Dialog.Content>
+		</Dialog.Root>
 
-	<Dialog.Root bind:open={deleteDialogOpen}>
-		<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">
-			<div class="px-5 pt-5 pr-12 pb-4">
+		<Dialog.Root bind:open={cancelDialogOpen}>
+			<Dialog.Content class="sm:max-w-[380px]">
+				<div class="px-5 pt-5 pr-12 pb-4">
+					<Dialog.Header>
+						<div class="flex items-start gap-3">
+							<span
+								class="grid size-8 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive"
+							>
+								<WarningCircle class="size-3.5" />
+							</span>
+							<div class="grid gap-1 pt-0.5">
+								<Dialog.Title>Cancel download?</Dialog.Title>
+								<Dialog.Description
+									>This stops the download but keeps it in the list.</Dialog.Description
+								>
+							</div>
+						</div>
+					</Dialog.Header>
+				</div>
+				<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+					<Dialog.Close>
+						{#snippet child({ props })}
+							<Button variant="outline" size="sm" class="h-8" {...props}>Keep</Button>
+						{/snippet}
+					</Dialog.Close>
+					<Button variant="destructive" size="sm" class="h-8" onclick={confirmCancel}
+						>Cancel download</Button
+					>
+				</Dialog.Footer>
+			</Dialog.Content>
+		</Dialog.Root>
+
+		<Dialog.Root bind:open={selectionDialogOpen}>
+			<Dialog.Content showCloseButton={true} class="gap-3 p-4 sm:max-w-[520px]">
 				<Dialog.Header>
-					<Dialog.Title>Remove download?</Dialog.Title>
-					<Dialog.Description>The queue entry will be removed. Local files are kept unless you choose to delete them.</Dialog.Description>
+					<Dialog.Title>Select files for {selectionDownload?.name ?? 'torrent'}</Dialog.Title>
+					<Dialog.Description
+						>You must choose at least one file before this torrent can start.</Dialog.Description
+					>
 				</Dialog.Header>
-			</div>
-			<div class="px-5 pb-4">
-				<label class="flex items-center gap-2 text-sm">
-					<input type="checkbox" bind:checked={deleteLocalFiles} /> Delete local files and partial data
-				</label>
-			</div>
-			<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
-				<Dialog.Close>
-					{#snippet child({ props })}<Button variant="outline" size="sm" {...props}>Keep</Button>{/snippet}
-				</Dialog.Close>
-				<Button variant="destructive" size="sm" onclick={confirmDelete}>Remove</Button>
-			</Dialog.Footer>
-		</Dialog.Content>
-	</Dialog.Root>
+				<div class="max-h-[55vh] overflow-y-auto">
+					{#if loadingSelection}
+						<div
+							class="flex items-center justify-center gap-2 py-8 text-[13px] text-muted-foreground"
+						>
+							<CircleNotch class="size-3.5 animate-spin" /> Loading files…
+						</div>
+					{:else}
+						<div class="grid gap-1">
+							{#each selectionDownload?.files ?? [] as file}
+								{@const checked = file.id != null && selectedFileIds.includes(file.id)}
+								<button
+									type="button"
+									role="checkbox"
+									aria-checked={checked}
+									onclick={() => toggleFile(file.id)}
+									class="flex cursor-pointer items-center gap-3 rounded px-2 py-2 text-left text-[13px] hover:bg-muted"
+								>
+									<Checkbox
+										{checked}
+										tabindex={-1}
+										class="pointer-events-none"
+										aria-hidden="true"
+									/>
+									<span class="min-w-0 flex-1 truncate" title={file.name}>{fileName(file)}</span>
+									<span class="shrink-0 font-mono text-xs text-muted-foreground"
+										>{fileSize(file)}</span
+									>
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+				<Dialog.Footer class="flex-row justify-between">
+					<Button variant="outline" size="sm" onclick={dismissSelection}>Choose later</Button>
+					<Button
+						size="sm"
+						disabled={loadingSelection || submittingSelection || !selectedFileIds.length}
+						onclick={submitSelection}
+						>{submittingSelection
+							? 'Starting…'
+							: `Start with ${selectedFileIds.length} selected`}</Button
+					>
+				</Dialog.Footer>
+			</Dialog.Content>
+		</Dialog.Root>
 
+		<Dialog.Root bind:open={deleteDialogOpen}>
+			<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">
+				<div class="px-5 pt-5 pr-12 pb-4">
+					<Dialog.Header>
+						<Dialog.Title>Remove download?</Dialog.Title>
+						<Dialog.Description
+							>The queue entry will be removed. Local files are kept unless you choose to delete
+							them.</Dialog.Description
+						>
+					</Dialog.Header>
+				</div>
+				<div class="px-5 pb-4">
+					<button
+						type="button"
+						role="checkbox"
+						aria-checked={deleteLocalFiles}
+						onclick={() => (deleteLocalFiles = !deleteLocalFiles)}
+						class="flex cursor-pointer items-center gap-2 text-left text-[13px]"
+					>
+						<Checkbox
+							checked={deleteLocalFiles}
+							tabindex={-1}
+							class="pointer-events-none"
+							aria-hidden="true"
+						/> Delete local files and partial data
+					</button>
+				</div>
+				<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+					<Dialog.Close>
+						{#snippet child({ props })}<Button variant="outline" size="sm" {...props}>Keep</Button
+							>{/snippet}
+					</Dialog.Close>
+					<Button variant="destructive" size="sm" onclick={confirmDelete}>Remove</Button>
+				</Dialog.Footer>
+			</Dialog.Content>
+		</Dialog.Root>
 	</Tooltip.Provider>
 {:else if authChecked}
-	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
-		<Card class="w-full max-w-sm">
-			<CardHeader>
-				<CardTitle>RMT-Debrid</CardTitle>
-				<p class="text-sm text-muted-foreground">Enter the household password to continue.</p>
-			</CardHeader>
-			<CardContent>
-				<form class="grid gap-3" onsubmit={(event) => { event.preventDefault(); login(); }}>
-					<label for="login-password" class="text-sm font-medium">Password</label>
-					<Input id="login-password" type="password" bind:value={password} autocomplete="current-password" autofocus />
-					{#if loginError}<p class="text-xs text-red-400" role="alert">{loginError}</p>{/if}
-					<Button type="submit" disabled={loggingIn || !password}>{loggingIn ? 'Signing in…' : 'Sign in'}</Button>
+	<main class="grid min-h-dvh place-items-center bg-background px-4 py-12 text-foreground sm:py-16">
+		<div class="w-full max-w-sm">
+			<div class="mb-8 px-1">
+				<span class="text-xs font-medium tracking-normal text-muted-foreground">RMT-Debrid</span>
+			</div>
+			<div class="ledger p-5 sm:p-6">
+				<h1 class="text-lg font-semibold tracking-tight">Sign in</h1>
+				<p class="mt-1 text-[13px] text-muted-foreground">
+					Enter the household password to continue.
+				</p>
+				<form
+					class="mt-5 grid gap-3"
+					onsubmit={(event) => {
+						event.preventDefault();
+						login();
+					}}
+				>
+					<div class="grid gap-1.5">
+						<label for="login-password" class="text-[13px] font-medium">Password</label>
+						<div class="relative">
+							<Input
+								id="login-password"
+								type={showPassword ? 'text' : 'password'}
+								bind:value={password}
+								autocomplete="current-password"
+								autofocus
+								enterkeyhint="go"
+								aria-invalid={loginError ? 'true' : undefined}
+								aria-describedby={loginError ? 'login-error' : undefined}
+								class={`h-10 border-transparent bg-muted/60 ${capsLockOn ? 'pr-16' : 'pr-10'} ${loginError ? '!border-destructive/60 !bg-destructive/[0.04]' : ''}`}
+								onkeydown={handlePasswordKey}
+								onkeyup={handlePasswordKey}
+								onclick={handlePasswordPointer}
+								onfocus={handlePasswordFocus}
+								onblur={() => (capsLockOn = false)}
+								oninput={() => {
+									if (loginError) loginError = '';
+								}}
+							/>
+							<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
+								{#if capsLockOn}
+									<span
+										role="status"
+										title="Caps lock is on"
+										aria-label="Caps lock is on"
+										class="grid size-7 place-items-center text-muted-foreground"
+									>
+										<ArrowFatLineUp class="size-4" aria-hidden="true" />
+									</span>
+								{/if}
+								<button
+									type="button"
+									onclick={() => (showPassword = !showPassword)}
+									aria-label={showPassword ? 'Hide password' : 'Show password'}
+									aria-pressed={showPassword}
+									class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								>
+									{#if showPassword}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}
+								</button>
+							</div>
+						</div>
+					</div>
+					{#if loginError}
+						<div
+							id="login-error"
+							role="alert"
+							class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-[13px] leading-5 text-destructive"
+						>
+							<WarningCircle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+							<p>{loginError}</p>
+						</div>
+					{/if}
+					<Button type="submit" class="h-10 w-full" disabled={loggingIn || !password}
+						>{#if loggingIn}<CircleNotch class="size-4 animate-spin" /> Signing in…{:else}Sign in{/if}</Button
+					>
 				</form>
-			</CardContent>
-		</Card>
+			</div>
+		</div>
 	</main>
 {:else}
-	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
-		<Loader2 class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
+	<main class="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
+		<CircleNotch class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
 	</main>
 {/if}

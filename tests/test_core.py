@@ -337,14 +337,22 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["torrents"], items[:50])
         self.assertEqual(out["page"], 2)
         self.assertEqual(out["limit"], 50)
+        self.assertEqual(out["returned_count"], 50)
+        self.assertIsNone(out["total"])
+        self.assertIsNone(out["page_count"])
         self.assertTrue(out["has_more"])
+        self.assertTrue(out["has_next"])
 
     async def test_rd_torrents_endpoint_last_page_has_no_more(self):
         items = [{"id": "only", "filename": "single.mkv", "bytes": 1000, "progress": 50, "status": "downloading"}]
         with patch.object(rd_api, "rd_request", new=AsyncMock(return_value=items)) as fake_request:
             out = await main.list_rd_torrents(limit=50, page=1, filter="active")
         self.assertEqual(out["torrents"], items)
+        self.assertEqual(out["returned_count"], 1)
+        self.assertEqual(out["total"], 1)
+        self.assertEqual(out["page_count"], 1)
         self.assertFalse(out["has_more"])
+        self.assertFalse(out["has_next"])
         self.assertEqual(fake_request.await_args.kwargs["params"], {"limit": 51, "page": 1, "filter": "active"})
 
     async def test_rd_torrents_endpoint_maps_rd_errors(self):

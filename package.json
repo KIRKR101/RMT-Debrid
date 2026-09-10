@@ -4,6 +4,8 @@
 	"scripts": {
 		"build:frontend": "cd frontend && bun vite build",
 		"check:frontend": "bun run --cwd frontend check",
+		"format:frontend": "bun run --cwd frontend format",
+		"format:check:frontend": "bun run --cwd frontend format:check",
 		"test:backend": "bun start-backend.js -m unittest discover -s tests -v",
 		"dev": "bun dev.js",
 		"dev:backend": "bun start-backend.js main.py",
