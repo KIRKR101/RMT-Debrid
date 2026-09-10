@@ -1,25 +1,52 @@
 <script lang="ts">
-	import { Check, ChevronDown, Download, Film, Loader2, Search, Tv, Upload } from '@lucide/svelte';
-	import { Select } from 'bits-ui';
+	import {
+		Check,
+		Download,
+		FilmSlate,
+		CircleNotch,
+		MagnifyingGlass,
+		Television,
+		Upload,
+		X
+	} from 'phosphor-svelte';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as Select from '$lib/components/ui/select';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import {
+		Card,
+		CardContent,
+		CardDescription,
+		CardHeader,
+		CardTitle
+	} from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { toast } from 'svelte-sonner';
 	import SiteHeader from '$lib/components/site-header.svelte';
 
 	type Title = { imdb_id: string; title: string; year: string; media_type: 'movie' | 'series' };
-	type Release = { info_hash: string; title: string; name: string; source: string; sources?: string[] };
+	type Release = {
+		info_hash: string;
+		title: string;
+		name: string;
+		source: string;
+		sources?: string[];
+	};
 
 	let query = $state('');
 	let mediaType = $state<'movie' | 'series'>('movie');
 	let titles = $state<Title[]>([]);
+	let searched = $state(false);
 	let selected = $state<Title | null>(null);
 	let season = $state<number | undefined>(undefined);
 	let episode = $state<number | undefined>(undefined);
 	let releases = $state<Release[]>([]);
 	let searching = $state(false);
+	let titleSearchError = $state('');
 	let loadingReleases = $state(false);
+	let releaseError = $state('');
 	let loadingMore = $state(false);
 	let canLoadMore = $state(false);
 	let action = $state<string | null>(null);
@@ -29,17 +56,23 @@
 	let selectionSubmitting = $state(false);
 	let selectionTaskId = $state<string | null>(null);
 	let selectionTaskName = $state('torrent');
-	let selectionFiles = $state<Array<{ id?: number; name?: string; size?: number; selected?: number }>>([]);
+	let selectionFiles = $state<
+		Array<{ id?: number; name?: string; size?: number; selected?: number }>
+	>([]);
 	let selectedFileIds = $state<number[]>([]);
 	let releaseQuery = $state('');
 	let quality = $state('All quality');
 	let releaseType = $state('All types');
 	let releaseSource = $state('All sources');
 	let sort = $state('Best match');
+	let episodeError = $state('');
 
 	const qualityFilters = ['All quality', '4K / UHD', '1080p', '720p'] as const;
 	const typeFilters = ['All types', 'WEB-DL', 'BluRay', 'Remux', 'Encode'] as const;
-	const sourceFilters = $derived(['All sources', ...new Set(releases.flatMap((release) => release.sources ?? [release.source]))]);
+	const sourceFilters = $derived([
+		'All sources',
+		...new Set(releases.flatMap((release) => release.sources ?? [release.source]))
+	]);
 
 	const filteredReleases = $derived(
 		[...releases]
@@ -47,28 +80,51 @@
 				const text = `${release.title} ${release.name}`.toLowerCase();
 				const q = releaseQuery.trim().toLowerCase();
 				const matchesQuery = !q || text.includes(q);
-				const matchesQuality = quality === 'All quality' || (quality === '4K / UHD' ? /\b(2160p|4k|uhd)\b/i.test(text) : text.includes(quality));
+				const matchesQuality =
+					quality === 'All quality' ||
+					(quality === '4K / UHD' ? /\b(2160p|4k|uhd)\b/i.test(text) : text.includes(quality));
 				const matchesType = releaseType === 'All types' || text.includes(releaseType.toLowerCase());
-				const matchesSource = releaseSource === 'All sources' || (release.sources ?? [release.source]).includes(releaseSource);
+				const matchesSource =
+					releaseSource === 'All sources' ||
+					(release.sources ?? [release.source]).includes(releaseSource);
 				return matchesQuery && matchesQuality && matchesType && matchesSource;
 			})
-			.sort((a, b) => sort === 'Name A–Z' ? a.title.localeCompare(b.title) : 0)
+			.sort((a, b) => (sort === 'Name A–Z' ? a.title.localeCompare(b.title) : 0))
+	);
+	const filtersActive = $derived(
+		Boolean(
+			releaseQuery.trim() ||
+			quality !== 'All quality' ||
+			releaseType !== 'All types' ||
+			releaseSource !== 'All sources' ||
+			sort !== 'Best match'
+		)
+	);
+	const releaseCountLabel = $derived(
+		filteredReleases.length === releases.length
+			? `${releases.length}`
+			: `${filteredReleases.length} of ${releases.length}`
 	);
 
 	async function searchTitles() {
 		if (query.trim().length < 2 || searching) return;
 		searching = true;
+		searched = true;
+		titleSearchError = '';
+		releaseError = '';
 		titles = [];
 		selected = null;
 		releases = [];
 		try {
-			const response = await fetch(`/api/discover/search?q=${encodeURIComponent(query.trim())}&type=${mediaType}`);
+			const response = await fetch(
+				`/api/discover/search?q=${encodeURIComponent(query.trim())}&type=${mediaType}`
+			);
 			const data = await response.json();
 			if (!response.ok) throw new Error(data.detail || 'Search failed');
 			titles = data.titles;
 			if (!titles.length) toast.info('No matching titles found.');
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Search failed');
+			titleSearchError = error instanceof Error ? error.message : 'Search failed';
 		} finally {
 			searching = false;
 		}
@@ -79,15 +135,19 @@
 		mediaType = title.media_type;
 		season = undefined;
 		episode = undefined;
+		episodeError = '';
 		releases = [];
-		releaseQuery = '';
+		releaseError = '';
+		clearFilters();
 		if (title.media_type === 'movie') await loadReleases();
 	}
 
 	async function loadReleases() {
 		const item = selected;
 		if (!item || loadingReleases) return;
+		if (!validateEpisodeSelection()) return;
 		loadingReleases = true;
+		releaseError = '';
 		releases = [];
 		releaseSource = 'All sources';
 		canLoadMore = false;
@@ -111,7 +171,7 @@
 			if (!releases.length && errors.length) throw errors[0];
 			if (!releases.length) toast.info('No releases found for that selection.');
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Release search failed');
+			releaseError = error instanceof Error ? error.message : 'Release search failed';
 		} finally {
 			loadingReleases = false;
 		}
@@ -125,24 +185,41 @@
 				merged.set(release.info_hash, release);
 				continue;
 			}
-			existing.sources = [...new Set([...(existing.sources ?? [existing.source]), ...(release.sources ?? [release.source])])];
+			existing.sources = [
+				...new Set([
+					...(existing.sources ?? [existing.source]),
+					...(release.sources ?? [release.source])
+				])
+			];
 		}
 		return [...merged.values()];
 	}
 
 	async function fetchReleases(item: Title, source: string, limit?: number) {
-			const params = new URLSearchParams();
-			if (item.media_type === 'series' && typeof season === 'number' && Number.isInteger(season) && season > 0) params.set('season', String(season));
-			if (item.media_type === 'series' && typeof episode === 'number' && Number.isInteger(episode) && episode > 0) params.set('episode', String(episode));
-			params.set('title', item.title);
-			if (item.year) params.set('year', item.year);
-			params.set('source', source);
-			if (limit) params.set('limit', String(limit));
-			const suffix = params.toString() ? `?${params}` : '';
-			const response = await fetch(`/api/discover/${item.media_type}/${item.imdb_id}${suffix}`);
-			const data = await response.json();
-			if (!response.ok) throw new Error(data.detail || 'Release search failed');
-			return data as { releases: Release[]; has_more: boolean };
+		const params = new URLSearchParams();
+		if (
+			item.media_type === 'series' &&
+			typeof season === 'number' &&
+			Number.isInteger(season) &&
+			season > 0
+		)
+			params.set('season', String(season));
+		if (
+			item.media_type === 'series' &&
+			typeof episode === 'number' &&
+			Number.isInteger(episode) &&
+			episode > 0
+		)
+			params.set('episode', String(episode));
+		params.set('title', item.title);
+		if (item.year) params.set('year', item.year);
+		params.set('source', source);
+		if (limit) params.set('limit', String(limit));
+		const suffix = params.toString() ? `?${params}` : '';
+		const response = await fetch(`/api/discover/${item.media_type}/${item.imdb_id}${suffix}`);
+		const data = await response.json();
+		if (!response.ok) throw new Error(data.detail || 'Release search failed');
+		return data as { releases: Release[]; has_more: boolean };
 	}
 
 	async function loadMore() {
@@ -156,7 +233,7 @@
 			canLoadMore = data.has_more;
 			if (releases.length === previousCount) toast.info('No additional Prowlarr releases found.');
 		} catch (error) {
-			toast.error(error instanceof Error ? error.message : 'Could not load more releases');
+			releaseError = error instanceof Error ? error.message : 'Could not load more releases';
 		} finally {
 			loadingMore = false;
 		}
@@ -170,11 +247,32 @@
 		sort = 'Best match';
 	}
 
+	function validateEpisodeSelection() {
+		episodeError = '';
+		const seasonValue = season;
+		const episodeValue = episode;
+		const hasSeason = seasonValue != null;
+		const hasEpisode = episodeValue != null;
+		if (hasEpisode && !hasSeason) {
+			episodeError = 'Enter a season before choosing an episode.';
+			return false;
+		}
+		if (
+			(hasSeason && (!Number.isInteger(seasonValue) || (seasonValue ?? 0) < 1)) ||
+			(hasEpisode && (!Number.isInteger(episodeValue) || (episodeValue ?? 0) < 1))
+		) {
+			episodeError = 'Season and episode must be positive whole numbers.';
+			return false;
+		}
+		return true;
+	}
+
 	async function addToRd(release: Release) {
 		action = `${release.info_hash}:rd`;
 		try {
 			const response = await fetch('/api/discover/add-to-rd', {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ info_hash: release.info_hash })
 			});
 			const data = await response.json();
@@ -193,7 +291,8 @@
 		action = `${release.info_hash}:download`;
 		try {
 			const response = await fetch('/api/discover/download', {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ info_hash: release.info_hash })
 			});
 			const data = await response.json();
@@ -216,8 +315,13 @@
 			selectionTaskId = taskId;
 			selectionTaskName = name;
 			selectionFiles = data.files ?? [];
-			selectedFileIds = selectionFiles.filter((file) => file.selected).map((file) => file.id).filter((id): id is number => id != null);
+			selectedFileIds = selectionFiles
+				.filter((file) => file.selected)
+				.map((file) => file.id)
+				.filter((id): id is number => id != null);
 			selectionOpen = true;
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Could not load file selection');
 		} finally {
 			selectionLoading = false;
 		}
@@ -228,7 +332,8 @@
 		selectionSubmitting = true;
 		try {
 			const response = await fetch(`/api/download/${selectionTaskId}/files`, {
-				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ file_ids: selectedFileIds })
 			});
 			const data = await response.json();
@@ -251,97 +356,496 @@
 
 <svelte:head>
 	<title>Discover — RMT-Debrid</title>
-	<meta name="description" content="Search for movies and shows, then add releases to Real-Debrid." />
+	<meta
+		name="description"
+		content="Search for movies and shows, then add releases to Real-Debrid."
+	/>
 </svelte:head>
 
-<main class="min-h-screen bg-background text-foreground">
+<main class="min-h-dvh bg-background text-foreground">
 	<SiteHeader onLogout={() => (window.location.href = '/')} />
 
-	<div class="mx-auto grid w-full max-w-6xl gap-4 px-3 py-4 sm:px-8 sm:py-6">
-		<Card class="gap-0 rounded-md py-0">
-			<CardContent class="px-3 py-3 sm:px-4">
-				<form class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center" onsubmit={(event) => { event.preventDefault(); searchTitles(); }}>
+	<div class="page-shell">
+		<div class="page-heading">
+			<div>
+				<h1 class="text-[22px] leading-7 font-semibold tracking-tight text-foreground">Discover</h1>
+				<p class="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+					Search movies and shows, then send releases to Real-Debrid.
+				</p>
+			</div>
+		</div>
+		<div class="console-strip px-3 py-3 sm:px-5 sm:py-4">
+			<div class="mb-3 flex items-center justify-between gap-3">
+				<p class="text-sm font-semibold tracking-tight text-foreground">Find a release</p>
+				<span class="shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+					>MOVIE / TV</span
+				>
+			</div>
+			<form
+				class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
+				onsubmit={(event) => {
+					event.preventDefault();
+					searchTitles();
+				}}
+			>
 				<span class="sr-only" id="media-type-label">Media type</span>
-				<div class="w-full sm:w-40">
-					<Select.Root type="single" bind:value={mediaType} name="media-type" items={[{ value: 'movie', label: 'Movie' }, { value: 'series', label: 'TV show' }]}>
-						<Select.Trigger aria-labelledby="media-type-label" class="flex h-10 w-full cursor-pointer items-center justify-between rounded-md border border-input bg-input/30 px-2.5 text-[13px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate shadow-xs outline-none transition-colors duration-75 hover:bg-muted focus:border-ring focus:ring-2 focus:ring-ring/30"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger>
-						<Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={6}><Select.Viewport><Select.Item value="movie" label="Movie" class="cursor-pointer rounded px-2 py-1.5 text-[13px] outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">Movie</Select.Item><Select.Item value="series" label="TV show" class="cursor-pointer rounded px-2 py-1.5 text-[13px] outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">TV show</Select.Item></Select.Viewport></Select.Content></Select.Portal>
+				<div class="w-full shrink-0 sm:w-32">
+					<Select.Root type="single" bind:value={mediaType} name="media-type">
+						<Select.Trigger aria-labelledby="media-type-label" class="h-8 w-full text-xs"
+							><span data-slot="select-value">{mediaType === 'movie' ? 'Movie' : 'TV show'}</span
+							></Select.Trigger
+						>
+						<Select.Content
+							><Select.Item value="movie" label="Movie">Movie</Select.Item><Select.Item
+								value="series"
+								label="TV show">TV show</Select.Item
+							></Select.Content
+						>
 					</Select.Root>
 				</div>
 				<label class="sr-only" for="title-search">Title</label>
-				<div class="relative flex-1"><Input id="title-search" bind:value={query} placeholder="Search for a movie or show…" autocomplete="off" class="h-10 text-[13px]" /></div>
-				<Button type="submit" class="h-10 w-full shrink-0 sm:w-auto" disabled={searching || query.trim().length < 2}>{#if searching}<Loader2 class="size-4 animate-spin" />{:else}<Search class="size-4" />{/if} Search</Button>
-			</form>
-			<p class="mt-2 text-xs text-muted-foreground">Tip: search by exact title for the cleanest release list.</p>
-		</CardContent>
-	</Card>
-
-	{#if titles.length}
-		<section class="grid gap-2" aria-label="Title results">
-			<div class="flex items-center justify-between"><h2 class="text-sm font-semibold">Choose a title</h2><span class="font-mono text-xs font-normal text-muted-foreground">{titles.length} matches</span></div>
-			<div class="grid gap-2 sm:grid-cols-2">
-				{#each titles as title (title.imdb_id)}
-					<button type="button" class={`group flex min-w-0 cursor-pointer items-center gap-2.5 rounded-md border border-border bg-card px-3 py-2.5 text-left transition-colors duration-75 hover:border-foreground/30 hover:bg-muted/40 ${selected?.imdb_id === title.imdb_id ? 'bg-muted/50' : ''}`} onclick={() => chooseTitle(title)}>
-						<span class="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">{#if title.media_type === 'movie'}<Film class="size-3.5" />{:else}<Tv class="size-3.5" />{/if}</span>
-						<span class="min-w-0 flex-1 overflow-hidden"><span class="block max-w-full truncate text-sm font-semibold" title={title.title}>{title.title}</span><span class="font-mono text-xs text-muted-foreground">{title.year || 'Year unknown'} · {title.imdb_id}</span></span>
-					</button>
-				{/each}
-			</div>
-		</section>
-	{/if}
-
-	{#if selected?.media_type === 'series'}
-		<Card class="gap-0 rounded-md py-0">
-			<CardHeader class="border-b border-border/60 px-3 py-3 sm:px-4"><CardTitle class="text-sm font-semibold">Which episode?</CardTitle><CardDescription class="text-xs">Leave both blank to search the whole show.</CardDescription></CardHeader>
-			<CardContent class="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-end sm:px-4">
-				<label class="grid gap-1.5 text-xs font-medium">Season<Input type="number" min="1" bind:value={season} placeholder="Any" class="h-8 w-full text-[13px] sm:w-28" /></label>
-				<label class="grid gap-1.5 text-xs font-medium">Episode<Input type="number" min="1" bind:value={episode} placeholder="Any" class="h-8 w-full text-[13px] sm:w-28" /></label>
-				<Button type="button" size="sm" class="h-8" onclick={() => loadReleases()} disabled={loadingReleases}>{#if loadingReleases}<Loader2 class="size-3.5 animate-spin" />{:else}<Search class="size-3.5" />{/if} Find releases</Button>
-			</CardContent>
-		</Card>
-	{/if}
-
-	{#if releases.length}
-		<section class="grid gap-2" aria-label="Torrent releases">
-			<div class="flex flex-wrap items-center justify-between gap-2"><div class="flex min-w-0 items-center gap-2"><h2 class="text-sm font-semibold">Available releases</h2><span class="font-mono text-xs font-normal text-muted-foreground">({filteredReleases.length})</span></div><div class="flex items-center gap-2"><span class="sr-only">Sort releases</span><Select.Root type="single" bind:value={sort} items={[{ value: 'Best match', label: 'Best match' }, { value: 'Name A–Z', label: 'Name A–Z' }]}><Select.Trigger class="flex h-8 w-28 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport><Select.Item value="Best match" label="Best match" class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">Best match</Select.Item><Select.Item value="Name A–Z" label="Name A–Z" class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">Name A–Z</Select.Item></Select.Viewport></Select.Content></Select.Portal></Select.Root></div></div>
-			<div class="flex flex-col gap-2 rounded-md border border-border/50 bg-muted/20 p-2 sm:flex-row sm:items-center"><div class="relative min-w-0 flex-1"><Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input bind:value={releaseQuery} placeholder="Filter releases…" class="h-8 pl-8 text-[13px]" aria-label="Filter releases by name" /></div><div class="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:items-center"><span class="sr-only" id="quality-filter-label">Filter by quality</span><Select.Root type="single" bind:value={quality} items={qualityFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="quality-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each qualityFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root><span class="sr-only" id="format-filter-label">Filter by format</span><Select.Root type="single" bind:value={releaseType} items={typeFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="format-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each typeFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root><span class="sr-only" id="source-filter-label">Filter by source</span><Select.Root type="single" bind:value={releaseSource} items={sourceFilters.map((option) => ({ value: option, label: option }))}><Select.Trigger aria-labelledby="source-filter-label" class="flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium text-foreground [&_[data-select-value]]:min-w-0 [&_[data-select-value]]:truncate outline-none transition-colors duration-75 hover:bg-foreground/5 focus:border-ring focus:ring-2 focus:ring-ring/30 sm:w-32"><Select.Value /><ChevronDown class="size-3.5 shrink-0 text-muted-foreground" /></Select.Trigger><Select.Portal><Select.Content class="z-50 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl" sideOffset={4}><Select.Viewport>{#each sourceFilters as option}<Select.Item value={option} label={option} class="cursor-pointer rounded px-2 py-1.5 text-xs outline-none hover:bg-foreground/10 data-[highlighted]:bg-foreground/10">{option}</Select.Item>{/each}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div></div>
-			{#if filteredReleases.length}
-			{#each filteredReleases as release (release.info_hash)}
-				<div class="group flex flex-col gap-2.5 rounded-md border border-border bg-card px-3 py-3 transition-colors duration-75 hover:border-foreground/25 sm:flex-row sm:items-center">
-					<div class="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-[11px] font-semibold text-muted-foreground">{release.source === 'Torrentio' ? 'TOR' : release.source === 'Prowlarr' ? 'PRO' : 'SRC'}</div><div class="w-full min-w-0 flex-1 overflow-hidden sm:w-0"><p class="w-full truncate text-sm font-semibold" title={release.title}>{release.title}</p><div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span class="min-w-0 truncate" title={release.name || release.source}>{release.name || release.source}</span><span class="shrink-0">{(release.sources ?? [release.source]).join(' + ')}</span><span aria-hidden="true">·</span><span class="shrink-0 font-mono">{release.info_hash.slice(0, 8)}…</span></div></div>
-					<div class="flex w-full shrink-0 gap-2 sm:w-auto"><Button class="h-8 min-w-0 flex-1 sm:flex-none" size="sm" variant="outline" title="Add to Real-Debrid" aria-label="Add to Real-Debrid" disabled={action !== null || added.has(release.info_hash)} onclick={() => addToRd(release)}>{#if added.has(release.info_hash)}<Check class="size-3.5" /><span>Added</span>{:else if action === `${release.info_hash}:rd`}<Loader2 class="size-3.5 animate-spin" /><span>Adding…</span>{:else}<Upload class="size-3.5" /><span>Add to RD</span>{/if}</Button><Button class="h-8 min-w-0 flex-1 sm:flex-none" size="sm" title="Download" aria-label="Download" disabled={action !== null} onclick={() => download(release)}>{#if action === `${release.info_hash}:download`}<Loader2 class="size-3.5 animate-spin" />{:else}<Download class="size-3.5" /><span>Download</span>{/if}</Button></div>
+				<div class="relative min-w-0 flex-1">
+					<Input
+						id="title-search"
+						bind:value={query}
+						placeholder="Search for a movie or show…"
+						autocomplete="off"
+						class="h-8 border-transparent bg-muted/60 pr-8 text-[13px] placeholder:text-[13px]"
+					/>
+					{#if query}
+						<button
+							type="button"
+							onclick={() => (query = '')}
+							aria-label="Clear title search"
+							class="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+						>
+							<X class="size-3.5" />
+						</button>
+					{/if}
 				</div>
-			{/each}
-			{:else}<div class="rounded-md border border-dashed border-border px-6 py-10 text-center"><p class="text-sm font-medium">No releases match those filters.</p><p class="mt-1 text-xs text-muted-foreground">Try clearing a filter or searching for a different release name.</p><Button variant="ghost" size="sm" class="mt-3 h-8" onclick={clearFilters}>Clear filters</Button></div>{/if}
-		</section>
-		{#if canLoadMore}
-			<div class="flex justify-center"><Button variant="outline" size="sm" class="h-8" onclick={loadMore} disabled={loadingMore}>{#if loadingMore}<Loader2 class="size-3.5 animate-spin" /> Loading more…{:else}Load more Prowlarr results{/if}</Button></div>
+				<Button
+					type="submit"
+					class="h-8 w-full shrink-0 px-4 text-[13px] sm:w-auto"
+					disabled={searching || query.trim().length < 2}
+					>{#if searching}<CircleNotch class="size-3.5 animate-spin" />{:else}<MagnifyingGlass
+							class="size-3.5"
+						/>{/if} Search</Button
+				>
+			</form>
+			<p class="mt-3 text-xs text-muted-foreground">
+				Tip: search by exact title for the cleanest release list.
+			</p>
+		</div>
+		{#if titleSearchError}
+			<Alert.Root
+				variant="destructive"
+				class="flex items-center justify-between gap-3"
+				role="alert"
+			>
+				<Alert.Description class="min-w-0 flex-1">{titleSearchError}</Alert.Description>
+				<Button variant="outline" size="xs" class="h-7 shrink-0" onclick={() => void searchTitles()}
+					>Retry search</Button
+				>
+			</Alert.Root>
 		{/if}
-	{/if}
-	{#if selected && loadingReleases}<div class="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-6 py-10 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Finding releases for {selected.title}…</div>{:else if selected && !releases.length && selected.media_type === 'movie'}<div class="rounded-md border border-dashed border-border px-6 py-10 text-center"><p class="text-sm font-medium">Ready to find releases for {selected.title}.</p><p class="mt-1 text-xs text-muted-foreground">Search results will appear here.</p></div>{/if}
+		{#if searching}
+			<section class="grid gap-3" aria-label="Loading title results" aria-busy="true">
+				<div class="section-heading">
+					<h2 class="text-sm font-semibold tracking-tight">Finding titles</h2>
+				</div>
+				<div class="grid gap-3 sm:grid-cols-2">
+					{#each [0, 1, 2, 3] as i (i)}
+						<div
+							class="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3.5"
+						>
+							<Skeleton class="size-8 shrink-0 rounded-md" />
+							<div class="min-w-0 flex-1">
+								<Skeleton class="h-3.5 w-2/3" /><Skeleton class="mt-2 h-3 w-1/3" />
+							</div>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{:else if searched && !titles.length}
+			<div
+				class="rounded-lg border border-dashed border-border px-6 py-10 text-center"
+				role="status"
+			>
+				<p class="text-sm font-medium">No titles found</p>
+				<p class="mt-1 text-xs text-muted-foreground">
+					Try the full title, or switch between movies and TV shows.
+				</p>
+			</div>
+		{/if}
+		{#if titles.length}
+			<section class="grid gap-3" aria-label="Title results">
+				<div class="section-heading">
+					<h2 class="text-sm font-semibold tracking-tight">Choose a title</h2>
+					<span class="shrink-0 font-mono text-xs font-normal text-muted-foreground"
+						>{titles.length} matches</span
+					>
+				</div>
+				<div class="grid gap-3 sm:grid-cols-2">
+					{#each titles as title (title.imdb_id)}
+						<button
+							type="button"
+							class={`group flex min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-4 py-3.5 text-left transition-colors duration-150 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-ring ${selected?.imdb_id === title.imdb_id ? 'border-muted-foreground/40 bg-muted/40' : 'border-border bg-card hover:bg-muted/40'}`}
+							onclick={() => chooseTitle(title)}
+							aria-pressed={selected?.imdb_id === title.imdb_id}
+						>
+							<span
+								class="grid size-8 shrink-0 place-items-center rounded-md border border-border text-muted-foreground"
+								>{#if title.media_type === 'movie'}<FilmSlate class="size-4" />{:else}<Television
+										class="size-4"
+									/>{/if}</span
+							>
+							<span class="min-w-0 flex-1"
+								><span
+									class="block truncate text-sm leading-5 font-medium tracking-tight"
+									title={title.title}>{title.title}</span
+								><span class="mt-0.5 block font-mono text-xs tabular-nums text-muted-foreground"
+									>{title.year || 'Year unknown'} · {title.imdb_id}</span
+								></span
+							>
+						</button>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if selected?.media_type === 'series'}
+			<Card
+				class="w-full gap-0 rounded-lg border-border py-0 sm:flex-row sm:items-center sm:rounded-r-none"
+			>
+				<CardHeader
+					class="shrink-0 border-b border-border px-3 py-3 sm:w-52 sm:rounded-tr-none sm:border-r sm:border-b-0 sm:px-4"
+					><CardTitle class="text-sm font-semibold">Which episode?</CardTitle><CardDescription
+						class="text-xs">Leave both blank to search the whole show.</CardDescription
+					></CardHeader
+				>
+				<CardContent
+					class="flex min-w-0 flex-col gap-2 px-3 py-3 sm:flex-1 sm:flex-row sm:items-end sm:px-4"
+				>
+					<div class="grid grid-cols-2 gap-2 sm:contents">
+						<label for="season-input" class="grid min-w-0 gap-1.5 text-xs font-medium"
+							>Season<Input
+								id="season-input"
+								type="number"
+								min="1"
+								bind:value={season}
+								placeholder="Any"
+								class="h-8 w-full text-[13px] sm:w-24"
+								aria-invalid={!!episodeError}
+								aria-describedby="episode-help"
+							/></label
+						>
+						<label for="episode-input" class="grid min-w-0 gap-1.5 text-xs font-medium"
+							>Episode<Input
+								id="episode-input"
+								type="number"
+								min="1"
+								bind:value={episode}
+								placeholder="Any"
+								class="h-8 w-full text-[13px] sm:w-24"
+								aria-invalid={!!episodeError}
+								aria-describedby="episode-help"
+							/></label
+						>
+					</div>
+					<Button
+						type="button"
+						size="sm"
+						class="h-8 w-full shrink-0 sm:w-auto"
+						onclick={() => loadReleases()}
+						disabled={loadingReleases}
+						>{#if loadingReleases}<CircleNotch
+								class="size-3.5 animate-spin"
+							/>{:else}<MagnifyingGlass class="size-3.5" />{/if} Find releases</Button
+					>
+				</CardContent>
+				{#if episodeError}<p
+						id="episode-help"
+						class="px-3 pb-3 text-xs text-destructive sm:px-4"
+						role="alert"
+					>
+						{episodeError}
+					</p>{/if}
+			</Card>
+		{/if}
+
+		{#if releases.length}
+			<section class="grid gap-3" aria-label="Torrent releases">
+				<div class="section-heading flex-wrap">
+					<h2 class="text-sm font-semibold tracking-tight">
+						Available releases <span class="font-mono text-xs font-normal text-muted-foreground"
+							>({releaseCountLabel})</span
+						>
+					</h2>
+					<div class="flex shrink-0 items-center gap-2">
+						<span class="hidden text-xs text-muted-foreground sm:block">Sort</span><span
+							class="sr-only">Sort releases</span
+						><Select.Root type="single" bind:value={sort}
+							><Select.Trigger class="h-7 w-32 text-xs"
+								><span data-slot="select-value">{sort}</span></Select.Trigger
+							><Select.Content sideOffset={4}
+								><Select.Item value="Best match" label="Best match">Best match</Select.Item
+								><Select.Item value="Name A–Z" label="Name A–Z">Name A–Z</Select.Item
+								></Select.Content
+							></Select.Root
+						>
+					</div>
+				</div>
+				<div class="grid gap-3 rounded-lg border border-border p-2.5 sm:p-3">
+					<div class="relative min-w-0">
+						<MagnifyingGlass
+							class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
+						/>
+						<Input
+							bind:value={releaseQuery}
+							placeholder="Filter releases…"
+							class="h-8 border-transparent bg-muted/60 pr-8 pl-8 text-[13px] placeholder:text-[13px]"
+							aria-label="Filter releases by name"
+						/>
+						{#if releaseQuery}
+							<button
+								type="button"
+								onclick={() => (releaseQuery = '')}
+								aria-label="Clear release filter"
+								class="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+							>
+								<X class="size-3.5" />
+							</button>
+						{/if}
+					</div>
+					<div class="grid grid-cols-1 gap-2 min-[480px]:grid-cols-3 sm:grid-cols-3">
+						<label class="grid min-w-0 gap-1.5 text-[11px] font-medium text-muted-foreground">
+							<span>Quality</span>
+							<Select.Root type="single" bind:value={quality}>
+								<Select.Trigger size="sm" aria-label="Filter by quality" class="h-8 w-full text-xs"
+									><span data-slot="select-value">{quality}</span></Select.Trigger
+								>
+								<Select.Content sideOffset={4}
+									>{#each qualityFilters as option}<Select.Item value={option} label={option}
+											>{option}</Select.Item
+										>{/each}</Select.Content
+								>
+							</Select.Root>
+						</label>
+						<label class="grid min-w-0 gap-1.5 text-[11px] font-medium text-muted-foreground">
+							<span>Format</span>
+							<Select.Root type="single" bind:value={releaseType}>
+								<Select.Trigger size="sm" aria-label="Filter by format" class="h-8 w-full text-xs"
+									><span data-slot="select-value">{releaseType}</span></Select.Trigger
+								>
+								<Select.Content sideOffset={4}
+									>{#each typeFilters as option}<Select.Item value={option} label={option}
+											>{option}</Select.Item
+										>{/each}</Select.Content
+								>
+							</Select.Root>
+						</label>
+						<label class="grid min-w-0 gap-1.5 text-[11px] font-medium text-muted-foreground">
+							<span>Source</span>
+							<Select.Root type="single" bind:value={releaseSource}>
+								<Select.Trigger size="sm" aria-label="Filter by source" class="h-8 w-full text-xs"
+									><span data-slot="select-value">{releaseSource}</span></Select.Trigger
+								>
+								<Select.Content sideOffset={4}
+									>{#each sourceFilters as option}<Select.Item value={option} label={option}
+											>{option}</Select.Item
+										>{/each}</Select.Content
+								>
+							</Select.Root>
+						</label>
+					</div>
+					{#if filtersActive}
+						<div class="flex items-center justify-between gap-3 border-t border-border/60 pt-2">
+							<p class="text-xs text-muted-foreground">Filters are narrowing this list.</p>
+							<Button variant="ghost" size="xs" class="h-7 shrink-0" onclick={clearFilters}
+								>Clear filters</Button
+							>
+						</div>
+					{/if}
+				</div>
+				{#if releaseError && !filteredReleases.length}
+					<Alert.Root
+						variant="destructive"
+						class="flex items-center justify-between gap-3"
+						role="alert"
+					>
+						<Alert.Description class="min-w-0 flex-1">{releaseError}</Alert.Description>
+						<Button
+							variant="outline"
+							size="xs"
+							class="h-7 shrink-0"
+							onclick={() => void loadReleases()}>Retry releases</Button
+						>
+					</Alert.Root>
+				{/if}
+				{#if filteredReleases.length}
+					<div class="ledger">
+						{#each filteredReleases as release (release.info_hash)}
+							<div
+								class="ledger-row row-enter group flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4"
+							>
+								<div
+									class="grid size-8 shrink-0 place-items-center rounded-md border border-border font-mono text-[10px] font-semibold tracking-wide text-muted-foreground"
+									title={release.source}
+									aria-label={`Source: ${release.source}`}
+								>
+									{release.source === 'Torrentio'
+										? 'TOR'
+										: release.source === 'Prowlarr'
+											? 'PRO'
+											: 'SRC'}
+								</div>
+								<div class="min-w-0 flex-1">
+									<p
+										class="line-clamp-2 break-words text-sm leading-5 font-medium tracking-tight"
+										title={release.title}
+									>
+										{release.title}
+									</p>
+									<div
+										class="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground"
+									>
+										<span
+											class="min-w-0 shrink line-clamp-2 break-words text-xs"
+											title={release.name || release.source}>{release.name || release.source}</span
+										>{#if (release.sources ?? []).length > 1}<span
+												class="hidden shrink-0 rounded-full border border-border px-1.5 py-px text-[10px] sm:inline-block"
+												>{(release.sources ?? []).join(' + ')}</span
+											>{/if}<span class="shrink-0 tabular-nums"
+											>{release.info_hash.slice(0, 8)}…</span
+										>
+									</div>
+								</div>
+								<div class="flex w-full shrink-0 gap-2 sm:w-auto">
+									<Button
+										class="h-7 min-w-0 flex-1 px-3 text-xs sm:flex-none"
+										size="sm"
+										variant="outline"
+										title="Add to Real-Debrid"
+										aria-label={`Add ${release.title} to Real-Debrid`}
+										disabled={action !== null || added.has(release.info_hash)}
+										onclick={() => addToRd(release)}
+										>{#if added.has(release.info_hash)}<Check class="size-3.5" /><span>Added</span
+											>{:else if action === `${release.info_hash}:rd`}<CircleNotch
+												class="size-3.5 animate-spin"
+											/><span>Adding…</span>{:else}<Upload class="size-3.5" /><span>Add to RD</span
+											>{/if}</Button
+									><Button
+										class="h-7 min-w-0 flex-1 px-3 text-xs sm:flex-none"
+										size="sm"
+										title="Download to server"
+										aria-label={`Download ${release.title} to server`}
+										disabled={action !== null}
+										onclick={() => download(release)}
+										>{#if action === `${release.info_hash}:download`}<CircleNotch
+												class="size-3.5 animate-spin"
+											/><span>Adding…</span>{:else}<Download class="size-3.5" /><span>Download</span
+											>{/if}</Button
+									>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}<div class="rounded-md border border-dashed border-border px-6 py-10 text-center">
+						<p class="text-sm font-medium">No releases match those filters.</p>
+						<p class="mt-1 text-xs text-muted-foreground">
+							Try clearing a filter or searching for a different release name.
+						</p>
+						<Button variant="ghost" size="sm" class="mt-3 h-8" onclick={clearFilters}
+							>Clear filters</Button
+						>
+					</div>{/if}
+			</section>
+			{#if canLoadMore}
+				<div class="flex justify-center">
+					<Button variant="outline" size="sm" class="h-8" onclick={loadMore} disabled={loadingMore}
+						>{#if loadingMore}<CircleNotch class="size-3.5 animate-spin" /> Loading more…{:else}Load
+							more Prowlarr results{/if}</Button
+					>
+				</div>
+			{/if}
+		{/if}
+		{#if selected && loadingReleases}<div
+				class="flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-6 py-10 text-sm text-muted-foreground"
+				role="status"
+			>
+				<CircleNotch class="size-4 animate-spin" /> Finding releases for {selected.title}…
+			</div>{:else if selected && releaseError && !releases.length}<Alert.Root
+				variant="destructive"
+				class="flex items-center justify-between gap-3"
+				role="alert"
+				><Alert.Description class="min-w-0 flex-1">{releaseError}</Alert.Description><Button
+					variant="outline"
+					size="xs"
+					class="h-7 shrink-0"
+					onclick={() => void loadReleases()}>Retry releases</Button
+				></Alert.Root
+			>{:else if selected && !releases.length && selected.media_type === 'movie'}<div
+				class="rounded-md border border-dashed border-border px-6 py-10 text-center"
+				role="status"
+			>
+				<p class="text-sm font-medium">No releases found</p>
+				<p class="mt-1 text-xs text-muted-foreground">Try another title or search again later.</p>
+				<Button variant="outline" size="sm" class="mt-3 h-8" onclick={() => void loadReleases()}
+					>Search again</Button
+				>
+			</div>{/if}
 	</div>
 </main>
 
-<Dialog.Root bind:open={selectionOpen} onOpenChange={(open) => { if (!open) selectionOpen = true; }}>
-	<Dialog.Content showCloseButton={false} class="gap-4 p-6 sm:max-w-[560px]">
+<Dialog.Root bind:open={selectionOpen}>
+	<Dialog.Content showCloseButton={true} class="gap-3 p-4 sm:max-w-[520px]">
 		<Dialog.Header>
 			<Dialog.Title>Select files for {selectionTaskName}</Dialog.Title>
-			<Dialog.Description>Choose at least one file before this torrent can start.</Dialog.Description>
+			<Dialog.Description
+				>Choose at least one file before this torrent can start.</Dialog.Description
+			>
 		</Dialog.Header>
 		<div class="max-h-[55vh] overflow-y-auto">
 			{#if selectionLoading}
-				<div class="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 class="size-4 animate-spin" /> Loading files…</div>
+				<div class="flex items-center justify-center gap-2 py-8 text-[13px] text-muted-foreground">
+					<CircleNotch class="size-3.5 animate-spin" /> Loading files…
+				</div>
 			{:else}
 				<div class="grid gap-1">
 					{#each selectionFiles as file}
-						<label class="flex cursor-pointer items-center gap-3 rounded px-2 py-2 text-sm hover:bg-muted">
-							<input type="checkbox" checked={file.id != null && selectedFileIds.includes(file.id)} onchange={() => { if (file.id == null) return; selectedFileIds = selectedFileIds.includes(file.id) ? selectedFileIds.filter((id) => id !== file.id) : [...selectedFileIds, file.id]; }} />
-							<span class="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span><span class="shrink-0 font-mono text-xs text-muted-foreground">{fileSize(file.size)}</span>
-						</label>
+						{@const checked = file.id != null && selectedFileIds.includes(file.id)}
+						<button
+							type="button"
+							role="checkbox"
+							aria-checked={checked}
+							onclick={() => {
+								if (file.id == null) return;
+								selectedFileIds = selectedFileIds.includes(file.id)
+									? selectedFileIds.filter((id) => id !== file.id)
+									: [...selectedFileIds, file.id];
+							}}
+							class="flex cursor-pointer items-center gap-3 rounded px-2 py-2 text-left text-[13px] hover:bg-muted"
+						>
+							<Checkbox {checked} tabindex={-1} class="pointer-events-none" aria-hidden="true" />
+							<span class="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span><span
+								class="shrink-0 font-mono text-xs text-muted-foreground">{fileSize(file.size)}</span
+							>
+						</button>
 					{/each}
 				</div>
 			{/if}
 		</div>
-		<Dialog.Footer><Button size="sm" disabled={selectionLoading || selectionSubmitting || !selectedFileIds.length} onclick={submitSelection}>{selectionSubmitting ? 'Starting…' : `Start with ${selectedFileIds.length} selected`}</Button></Dialog.Footer>
+		<Dialog.Footer class="flex-row justify-between"
+			><Button variant="outline" size="sm" onclick={() => (selectionOpen = false)}
+				>Choose later</Button
+			><Button
+				size="sm"
+				disabled={selectionLoading || selectionSubmitting || !selectedFileIds.length}
+				onclick={submitSelection}
+				>{selectionSubmitting
+					? 'Starting…'
+					: `Start with ${selectedFileIds.length} selected`}</Button
+			></Dialog.Footer
+		>
 	</Dialog.Content>
 </Dialog.Root>

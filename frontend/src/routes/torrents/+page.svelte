@@ -1,12 +1,35 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ArrowDown, Check, ChevronLeft, ChevronRight, ChevronsLeft, CircleAlert, Download, Inbox, Info, Loader2, Play, RefreshCw, Search, Trash2 } from '@lucide/svelte';
+	import {
+		ArrowDown,
+		Check,
+		CaretLeft,
+		CaretRight,
+		CaretDoubleLeft,
+		WarningCircle,
+		Download,
+		Tray,
+		Info,
+		CircleNotch,
+		Play,
+		ArrowClockwise,
+		MagnifyingGlass,
+		Trash,
+		X
+	} from 'phosphor-svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
-	import { Progress } from '$lib/components/ui/progress';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { Switch } from '$lib/components/ui/switch';
+	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Label } from '$lib/components/ui/label';
+	import StatusBadge from '$lib/components/status-badge.svelte';
+	import EmptyState from '$lib/components/empty-state.svelte';
+	import { statusKind } from '$lib/status';
+	import { formatBytes, formatDateTimeCompact } from '$lib/format';
 	import { toast } from 'svelte-sonner';
 	import SiteHeader from '$lib/components/site-header.svelte';
 
@@ -41,6 +64,8 @@
 	let activeOnly = $state(false);
 	let page = $state(1);
 	let hasMore = $state(false);
+	let totalCount = $state<number | null>(null);
+	let pageCount = $state<number | null>(null);
 	const PAGE_SIZE = 50;
 	let authChecked = $state(false);
 	let authenticated = $state(false);
@@ -74,19 +99,16 @@
 			if (activeOnly && inactiveStatuses.includes(torrent.status)) return false;
 			const q = query.trim().toLowerCase();
 			if (!q) return true;
-			return (
-				torrent.filename.toLowerCase().includes(q) ||
-				torrent.status.toLowerCase().includes(q)
-			);
+			return torrent.filename.toLowerCase().includes(q) || torrent.status.toLowerCase().includes(q);
 		})
 	);
-
-	function formatBytes(bytes: number) {
-		if (!bytes || bytes <= 0) return '0 B';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-		return `${parseFloat((bytes / 1024 ** unit).toFixed(1))} ${units[unit]}`;
-	}
+	const torrentCountLabel = $derived(
+		filteredTorrents.length === 0
+			? '0 matching torrents'
+			: totalCount != null && !query.trim()
+				? `${filteredTorrents.length} of ${totalCount} torrents`
+				: `${filteredTorrents.length} matching torrents`
+	);
 
 	function formatSpeed(bps?: number) {
 		if (!bps || bps <= 0) return '';
@@ -95,27 +117,21 @@
 		return `${mbps.toFixed(1)} MB/s`;
 	}
 
-	function formatDate(value?: string) {
-		if (!value) return '';
-		const parsed = new Date(value);
-		return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString();
-	}
-
 	function statusClass(status: string) {
-		if (status === 'downloaded') return 'text-emerald-400';
-		if (['error', 'magnet_error', 'virus', 'dead'].includes(status)) return 'text-red-400';
-		if (status === 'downloading') return 'text-violet-300';
-		return 'text-sky-300';
+		const kind = statusKind(status);
+		if (kind === 'destructive') return 'text-destructive';
+		if (kind === 'success') return 'text-foreground';
+		return 'text-muted-foreground';
 	}
 
-	function dotClass(status: string) {
-		if (status === 'downloaded') return 'bg-emerald-400';
-		if (['error', 'magnet_error', 'virus', 'dead'].includes(status)) return 'bg-red-400';
-		if (status === 'downloading') return 'bg-violet-400';
-		return 'bg-sky-400';
+	function railClass(status: string) {
+		const kind = statusKind(status);
+		if (kind === 'success') return 'ledger-rail is-done';
+		if (kind === 'destructive') return 'ledger-rail is-failed';
+		return 'ledger-rail';
 	}
 
-	function metaLine(torrent: RdTorrent) {
+	function metaParts(torrent: RdTorrent) {
 		const parts: string[] = [];
 		if (torrent.bytes > 0) parts.push(formatBytes(torrent.bytes));
 		const speed = formatSpeed(torrent.speed);
@@ -123,9 +139,9 @@
 		if (torrent.seeders != null && torrent.status === 'downloading') {
 			parts.push(`${torrent.seeders} seeders`);
 		}
-		const added = formatDate(torrent.added);
+		const added = formatDateTimeCompact(torrent.added);
 		if (added) parts.push(added);
-		return parts.join(' · ');
+		return parts;
 	}
 
 	function mediaSummary(mediaInfos: unknown): {
@@ -159,13 +175,21 @@
 		for (const [id, track] of Object.entries(tracks as Record<string, unknown>)) {
 			if (!track || typeof track !== 'object') continue;
 			const record = track as Record<string, unknown>;
-			const lang = typeof record.lang === 'string' && record.lang ? record.lang : typeof record.lang_iso === 'string' ? record.lang_iso : id;
+			const lang =
+				typeof record.lang === 'string' && record.lang
+					? record.lang
+					: typeof record.lang_iso === 'string'
+						? record.lang_iso
+						: id;
 			const extras: string[] = [];
 			if (typeof record.codec === 'string' && record.codec) extras.push(record.codec);
-			if (typeof record.channels === 'number' && record.channels) extras.push(`${record.channels}ch`);
-			if (typeof record.sampling === 'number' && record.sampling) extras.push(`${record.sampling}Hz`);
+			if (typeof record.channels === 'number' && record.channels)
+				extras.push(`${record.channels}ch`);
+			if (typeof record.sampling === 'number' && record.sampling)
+				extras.push(`${record.sampling}Hz`);
 			if (typeof record.type === 'string' && record.type) extras.push(record.type);
-			if (typeof record.width === 'number' && typeof record.height === 'number') extras.push(`${record.width}x${record.height}`);
+			if (typeof record.width === 'number' && typeof record.height === 'number')
+				extras.push(`${record.width}x${record.height}`);
 			rows.push({ id, label: extras.length > 0 ? `${lang} (${extras.join(' · ')})` : `${lang}` });
 		}
 		return rows;
@@ -241,7 +265,11 @@
 				detail?: string;
 			} | null;
 			if (!response.ok) throw new Error(data?.detail ?? 'Could not open the Real-Debrid player.');
-			if (data?.streamable !== true || typeof data.streaming_url !== 'string' || !data.streaming_url) {
+			if (
+				data?.streamable !== true ||
+				typeof data.streaming_url !== 'string' ||
+				!data.streaming_url
+			) {
 				throw new Error('Streaming is not available for this file.');
 			}
 			popup.location.href = data.streaming_url;
@@ -262,20 +290,35 @@
 		filesLoading = torrent.id;
 		try {
 			const response = await fetch(`/api/rd/torrents/${encodeURIComponent(torrent.id)}`);
-			const data = await response.json().catch(() => null) as { files?: unknown; detail?: string } | null;
+			const data = (await response.json().catch(() => null)) as {
+				files?: unknown;
+				detail?: string;
+			} | null;
 			if (!response.ok) {
 				if (response.status === 401) authenticated = false;
 				throw new Error(data?.detail ?? 'Could not load torrent files.');
 			}
 			torrentFiles = {
 				...torrentFiles,
-				[torrent.id]: Array.isArray(data?.files) ? data.files as RdFile[] : []
+				[torrent.id]: Array.isArray(data?.files) ? (data.files as RdFile[]) : []
 			};
 		} catch (err) {
-			filesError = { ...filesError, [torrent.id]: err instanceof Error ? err.message : 'Could not load torrent files.' };
+			filesError = {
+				...filesError,
+				[torrent.id]: err instanceof Error ? err.message : 'Could not load torrent files.'
+			};
 		} finally {
 			if (filesLoading === torrent.id) filesLoading = null;
 		}
+	}
+
+	function retryTorrentFiles(torrent: RdTorrent) {
+		torrentFiles = Object.fromEntries(
+			Object.entries(torrentFiles).filter(([id]) => id !== torrent.id)
+		);
+		filesError = { ...filesError, [torrent.id]: '' };
+		expandedTorrentId = null;
+		void toggleTorrentFiles(torrent);
 	}
 
 	async function downloadTorrentFile(torrent: RdTorrent, file: RdFile) {
@@ -283,8 +326,11 @@
 		const key = `${torrent.id}:${file.id}`;
 		downloadingFileId = key;
 		try {
-			const response = await fetch(`/api/rd/torrents/${encodeURIComponent(torrent.id)}/files/${file.id}/download`, { method: 'POST' });
-			const data = await response.json().catch(() => null) as { detail?: string } | null;
+			const response = await fetch(
+				`/api/rd/torrents/${encodeURIComponent(torrent.id)}/files/${file.id}/download`,
+				{ method: 'POST' }
+			);
+			const data = (await response.json().catch(() => null)) as { detail?: string } | null;
 			if (!response.ok) {
 				if (response.status === 401) authenticated = false;
 				throw new Error(data?.detail ?? 'Could not add file to downloads.');
@@ -309,19 +355,30 @@
 			const data = await response.json().catch(() => null);
 			if (!response.ok) {
 				if (response.status === 401) authenticated = false;
-				throw new Error(
-					(data as { detail?: string } | null)?.detail ?? 'Could not load torrents.'
-				);
+				throw new Error((data as { detail?: string } | null)?.detail ?? 'Could not load torrents.');
 			}
-			const payload = data as { torrents?: unknown; has_more?: unknown } | RdTorrent[] | null;
+			const payload = data as
+				| {
+						torrents?: unknown;
+						has_more?: unknown;
+						has_next?: unknown;
+						total?: unknown;
+						page_count?: unknown;
+				  }
+				| RdTorrent[]
+				| null;
 			if (Array.isArray(payload)) {
 				// Legacy backend shape: bare list with no pagination metadata.
 				torrents = payload;
 				hasMore = payload.length >= PAGE_SIZE;
+				totalCount = null;
+				pageCount = null;
 			} else {
 				const list = payload?.torrents;
 				torrents = Array.isArray(list) ? list : [];
-				hasMore = payload?.has_more === true;
+				hasMore = payload?.has_next === true || payload?.has_more === true;
+				totalCount = typeof payload?.total === 'number' ? payload.total : null;
+				pageCount = typeof payload?.page_count === 'number' ? payload.page_count : null;
 			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Could not load torrents.';
@@ -341,12 +398,14 @@
 		authenticated = false;
 		torrents = [];
 		hasMore = false;
+		totalCount = null;
+		pageCount = null;
 	}
 
 	function goToPage(next: number) {
 		if (next < 1 || next === page || loading || refreshing) return;
 		page = next;
-		window.scrollTo({ top: 0 });
+		window.scrollTo({ top: 0, behavior: 'smooth' });
 		void fetchTorrents();
 	}
 
@@ -354,7 +413,9 @@
 		if (importingId) return;
 		importingId = torrent.id;
 		try {
-			const response = await fetch(`/api/rd/torrents/${encodeURIComponent(torrent.id)}/import`, { method: 'POST' });
+			const response = await fetch(`/api/rd/torrents/${encodeURIComponent(torrent.id)}/import`, {
+				method: 'POST'
+			});
 			const data = await response.json().catch(() => null);
 			if (!response.ok) {
 				if (response.status === 401) authenticated = false;
@@ -431,11 +492,11 @@
 </svelte:head>
 
 {#if !authChecked}
-	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
-		<Loader2 class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
+	<main class="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
+		<CircleNotch class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
 	</main>
 {:else if !authenticated}
-	<main class="grid min-h-screen place-items-center bg-background px-4 text-foreground">
+	<main class="grid min-h-dvh place-items-center bg-background px-4 text-foreground">
 		<Card class="w-full max-w-sm">
 			<CardHeader>
 				<CardTitle>Torrents</CardTitle>
@@ -447,271 +508,422 @@
 		</Card>
 	</main>
 {:else}
-	<main class="min-h-screen bg-background text-foreground">
-		<SiteHeader onLogout={handleLogout} />
+	<Tooltip.Provider>
+		<main class="min-h-dvh bg-background text-foreground">
+			<SiteHeader onLogout={handleLogout} />
 
-		<div class="mx-auto w-full max-w-6xl px-4 py-6 sm:px-8">
-			<section aria-labelledby="torrents-heading">
-				<Card class="gap-0 rounded-md py-0">
-					<CardHeader class="border-b border-border/60 px-4 py-3">
-						<div class="flex flex-wrap items-center justify-between gap-2">
-							<CardTitle id="torrents-heading" class="text-sm font-semibold text-foreground">
-								Real-Debrid Torrents
-								{#if !loading}<span class="font-mono text-xs font-normal text-muted-foreground">({filteredTorrents.length})</span>{/if}
-							</CardTitle>
-							<div class="flex items-center gap-2">
-								<Button
-									variant="ghost"
-									size="icon-xs"
-									aria-label="Refresh torrents"
-									onclick={() => void fetchTorrents()}
-									disabled={loading || refreshing}
-								>
-									<RefreshCw class={`size-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-								</Button>
+			<div class="page-shell">
+				<div class="page-heading">
+					<div>
+						<h1 class="text-[22px] leading-7 font-semibold tracking-tight text-foreground">
+							Torrents
+						</h1>
+						<p class="mt-1 font-mono text-xs tabular-nums text-muted-foreground">
+							Everything stored in your Real-Debrid account.
+						</p>
+					</div>
+				</div>
+				<section aria-labelledby="torrents-heading" aria-busy={loading || refreshing}>
+					<div class="ledger">
+						<div class="border-b border-border px-4 pt-3 pb-4 sm:px-5 sm:py-4">
+							<div class="section-heading flex-wrap" style="min-height: 0;">
+								<div class="flex items-center gap-2">
+									<h2
+										id="torrents-heading"
+										class="text-sm font-semibold tracking-tight text-foreground"
+									>
+										Real-Debrid torrents
+									</h2>
+									<Button
+										variant="ghost"
+										size="icon-xs"
+										class="size-5 shrink-0"
+										aria-label="Refresh torrents"
+										onclick={() => void fetchTorrents()}
+										disabled={loading || refreshing}
+									>
+										<ArrowClockwise class={`size-3 ${refreshing ? 'animate-spin' : ''}`} />
+									</Button>
+								</div>
 							</div>
-						</div>
-						<div class="mt-2.5 flex min-w-0 items-center gap-2">
-							<div class="relative min-w-0 flex-1">
-								<Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-								<Input bind:value={query} placeholder="Filter this page…" aria-label="Filter torrents on this page" class="h-8 pl-8 text-[13px]" />
-							</div>
-													<button
-								type="button"
-								aria-pressed={activeOnly}
-								onclick={toggleActiveOnly}
-								class={`flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-md border border-border/50 px-2.5 text-[11px] font-medium transition-colors duration-75 ${activeOnly ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'}`}
-							>
-								Active only
-													</button>
-						</div>
-					</CardHeader>
-
-					<CardContent class="px-4 pb-2">
-						{#if loading}
-							<div class="grid gap-1 py-2" aria-label="Loading torrents">
-								{#each [0, 1, 2] as i (i)}
-									<div class="py-2">
-										<div class="h-3.5 w-2/3 animate-pulse rounded bg-muted"></div>
-										<div class="mt-2 h-[5px] w-full animate-pulse rounded bg-muted"></div>
-									</div>
-								{/each}
-							</div>
-						{:else if error}
-							<div class="py-4">
-								<Alert.Root variant="destructive">
-									<Alert.Description>{error}</Alert.Description>
-								</Alert.Root>
-							</div>
-						{:else if torrents.length === 0}
-							<div class="flex flex-col items-center px-6 py-10 text-center">
-								<Inbox class="size-6 text-muted-foreground" />
-								<p class="mt-3 text-sm text-muted-foreground">
-									{activeOnly ? 'No active torrents on Real-Debrid' : 'No torrents on Real-Debrid'}
-								</p>
-							</div>
-						{:else if filteredTorrents.length === 0}
-							<div class="px-6 py-10 text-center text-sm text-muted-foreground">No matches</div>
-						{:else}
-							<ul class="divide-y divide-border/30">
-								{#each filteredTorrents as torrent (torrent.id)}
-									<li class="group py-3.5">
-										<div class="flex items-center justify-between gap-3">
-											<div class="flex min-w-0 items-center gap-1.5">
-												<button
-													type="button"
-													class="grid size-6 shrink-0 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-													aria-expanded={expandedTorrentId === torrent.id}
-													aria-label={`${expandedTorrentId === torrent.id ? 'Hide' : 'Show'} files for ${torrent.filename}`}
-													onclick={() => void toggleTorrentFiles(torrent)}
-												>
-													<ChevronRight class={`size-3.5 transition-transform ${expandedTorrentId === torrent.id ? 'rotate-90' : ''}`} />
-												</button>
-												<p class="min-w-0 truncate text-sm font-semibold" title={torrent.filename}>
-													{torrent.filename}
-												</p>
-											</div>
-							<div class="flex shrink-0 items-center gap-1.5">
-								<span class={`hidden shrink-0 items-center gap-1.5 text-[11px] font-medium whitespace-nowrap capitalize sm:inline-flex ${statusClass(torrent.status)}`}>
-									<span class={`size-1.5 rounded-full ${dotClass(torrent.status)}`}></span>
-									{torrent.status.replaceAll('_', ' ')}
-								</span>
-								<span
-									class={`inline-flex shrink-0 items-center sm:hidden ${statusClass(torrent.status)}`}
-									aria-label={torrent.status.replaceAll('_', ' ')}
-									title={torrent.status.replaceAll('_', ' ')}
-								>
-									{#if torrent.status === 'downloaded'}
-										<Check class="size-4" aria-hidden="true" />
-									{:else if ['error', 'magnet_error', 'virus', 'dead'].includes(torrent.status)}
-										<CircleAlert class="size-4" aria-hidden="true" />
-									{:else if torrent.status === 'downloading'}
-										<ArrowDown class="size-4" aria-hidden="true" />
-									{:else}
-										<Loader2 class="size-4" aria-hidden="true" />
+							<div class="mt-4 flex min-w-0 items-center gap-3">
+								<div class="relative min-w-0 flex-1">
+									<MagnifyingGlass
+										class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
+									/>
+									<Input
+										bind:value={query}
+										placeholder="Filter this page…"
+										aria-label="Filter torrents on this page"
+										class="h-8 border-transparent bg-muted/60 pr-8 pl-9 text-[13px] placeholder:text-[13px]"
+									/>
+									{#if query}
+										<button
+											type="button"
+											onclick={() => (query = '')}
+											aria-label="Clear filter"
+											class="absolute top-1/2 right-2 grid size-6 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+										>
+											<X class="size-3.5" />
+										</button>
 									{/if}
-								</span>
-												{#if torrent.status === 'downloaded'}
-													{#if importedIds.includes(torrent.id)}
-														<span class="grid size-6 place-items-center text-emerald-400" title="Added to downloads" aria-label="Added to downloads">
-															<Check class="size-3.5" />
-														</span>
-													{:else}
-														<button
-															type="button"
-																class="ml-1 grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-50"
-															title="Add to downloads"
-															aria-label={`Add ${torrent.filename} to downloads`}
-															disabled={importingId === torrent.id}
-															onclick={() => void importTorrent(torrent)}
-														>
-															{#if importingId === torrent.id}
-																<Loader2 class="size-3.5 animate-spin" />
-															{:else}
-																<Download class="size-3.5" />
-															{/if}
-														</button>
-													{/if}
-												{/if}
-												<button
-													type="button"
-														class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
-													title="Delete from Real-Debrid"
-													aria-label={`Delete ${torrent.filename} from Real-Debrid`}
-													onclick={() => requestDeleteRd(torrent)}
-												>
-													<Trash2 class="size-3.5" />
-												</button>
-											</div>
-										</div>
-										<div class="mt-1 flex items-baseline justify-between gap-3 pl-7">
-											<p class="min-w-0 truncate font-mono text-xs text-muted-foreground">
-												{metaLine(torrent)}
-											</p>
-											{#if torrent.status !== 'downloaded'}
-												<span class="w-11 shrink-0 text-right font-mono text-xs text-foreground">
-													{torrent.progress}%
-												</span>
-											{/if}
-										</div>
-										{#if torrent.status !== 'downloaded'}
-											<div class="mt-1.5 pl-7">
-												<Progress
-													value={torrent.progress}
-													max={100}
-													class="h-[5px] flex-1"
-													aria-label={`${torrent.filename} progress`}
-												/>
-											</div>
-										{/if}
-										{#if expandedTorrentId === torrent.id}
-											<div class="mt-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
-												{#if filesLoading === torrent.id}
-													<p class="text-xs text-muted-foreground">Loading files…</p>
-												{:else if filesError[torrent.id]}
-													<p class="text-xs text-destructive">{filesError[torrent.id]}</p>
-												{:else if torrentFiles[torrent.id]?.length === 0}
-													<p class="text-xs text-muted-foreground">No constituent files reported.</p>
-												{:else}
-													<ul class="space-y-1.5">
-														{#each torrentFiles[torrent.id] ?? [] as file (file.id ?? file.path)}
-															<li class="flex items-center justify-between gap-3 text-xs">
-																<span class="min-w-0 truncate font-mono text-muted-foreground" title={file.path ?? 'Unnamed file'}>{file.path ?? 'Unnamed file'}</span>
-																<div class="flex shrink-0 items-center gap-2">
-																															<span class="font-mono text-muted-foreground">{formatBytes(file.bytes ?? 0)}</span>
-															{#if file.individually_downloadable && file.id != null}
-																{@const stream = streamingLinks[`${torrent.id}:${file.id}`]}
-										{#if stream?.status === 'loading'}
-																	<span class="grid size-6 place-items-center text-muted-foreground" aria-label="Checking streaming availability">
-																		<Loader2 class="size-3 animate-spin" />
-																	</span>
-						{:else}
-						<button
-								type="button"
-																		class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-								title="Play in Real-Debrid"
-								aria-label={`Play ${file.path ?? 'file'} in Real-Debrid`}
-								onclick={() => void openStreamingPage(torrent, file)}
-							>
-								<Play class="size-3" />
-							</button>
-							<button
-								type="button"
-								class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-								title="Show media info"
-								aria-label={`Show media info for ${file.path ?? 'file'}`}
-								onclick={() => void openStreamingDialog(torrent, file)}
-							>
-								<Info class="size-3" />
-							</button>
-																{/if}
-																															<button
-																		type="button"
-																		class="grid size-6 cursor-pointer place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-50"
-															disabled={file.id == null || downloadingFileId !== null}
-															title="Add file to downloads"
-																			aria-label={`Add ${file.path ?? 'file'} to downloads`}
-																		onclick={() => void downloadTorrentFile(torrent, file)}
-																	>
-																		{#if downloadingFileId === `${torrent.id}:${file.id}`}
-																			<Loader2 class="size-3 animate-spin" />
-																		{:else}
-																			<Download class="size-3" />
-																		{/if}
-																															</button>
-																											{/if}
-																</div>
-															</li>
-														{/each}
-													</ul>
-												{/if}
-											</div>
-										{/if}
-									</li>
-								{/each}
-							</ul>
-						{/if}
-					</CardContent>
-					{#if !loading && !error && (torrents.length > 0 || page > 1)}
-						<CardFooter class="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-3">
-							<p class="min-w-0 truncate font-mono text-xs text-muted-foreground">
-								{torrents.length} shown · Page {page}
-							</p>
-							<div class="flex shrink-0 items-center gap-1.5" role="navigation" aria-label="Torrent pages">
-								<Button
-									variant="outline"
-									size="icon-xs"
-									disabled={page <= 1 || refreshing}
-									onclick={() => goToPage(1)}
-									aria-label="Go to first page"
-								>
-									<ChevronsLeft class="size-3.5" />
-								</Button>
-								<Button
-									variant="outline"
-									size="xs"
-									disabled={page <= 1 || refreshing}
-									onclick={() => goToPage(page - 1)}
-									aria-label="Go to previous page"
-								>
-									<ChevronLeft class="size-3.5" /> Previous
-								</Button>
-								<Button
-									variant="outline"
-									size="xs"
-									disabled={!hasMore || refreshing}
-									onclick={() => goToPage(page + 1)}
-									aria-label="Go to next page"
-								>
-									Next <ChevronRight class="size-3.5" />
-								</Button>
+								</div>
+								<div class="flex shrink-0 items-center gap-2">
+									<Switch
+										id="active-only"
+										checked={activeOnly}
+										onCheckedChange={() => toggleActiveOnly()}
+										aria-label="Show active only"
+									/>
+									<Label
+										for="active-only"
+										class="text-xs font-medium whitespace-nowrap text-muted-foreground"
+										>Active only</Label
+									>
+								</div>
 							</div>
-						</CardFooter>
-					{/if}
-				</Card>
-			</section>
-		</div>
-	</main>
+						</div>
+
+						<div class="px-2 py-2 sm:px-3">
+							{#if loading}
+								<div class="grid gap-1 py-2" aria-label="Loading torrents">
+									{#each [0, 1, 2] as i (i)}
+										<div class="py-2">
+											<Skeleton class="h-3.5 w-2/3" />
+											<Skeleton class="mt-2 h-[5px] w-full" />
+										</div>
+									{/each}
+								</div>
+							{:else if error}
+								<div class="py-4">
+									<Alert.Root variant="destructive" class="flex items-center justify-between gap-3">
+										<Alert.Description class="min-w-0 flex-1">{error}</Alert.Description>
+										<Button
+											variant="outline"
+											size="xs"
+											class="h-7 shrink-0"
+											onclick={() => void fetchTorrents()}
+											disabled={refreshing}>Retry</Button
+										>
+									</Alert.Root>
+								</div>
+							{:else if torrents.length === 0 && !activeOnly && !query.trim()}
+								<EmptyState
+									icon={Tray}
+									title={activeOnly
+										? 'No active torrents on Real-Debrid'
+										: 'No torrents on Real-Debrid'}
+								/>
+							{:else if filteredTorrents.length === 0}
+								<EmptyState
+									icon={MagnifyingGlass}
+									title={activeOnly ? 'No active torrents' : 'No torrents match this search'}
+									hint={activeOnly
+										? 'There are no in-progress torrents on the current page.'
+										: 'Try a different search term or clear the filter.'}
+									actionLabel={activeOnly ? 'Show all torrents' : 'Clear search'}
+									onAction={() => {
+										if (activeOnly) {
+											activeOnly = false;
+											page = 1;
+											void fetchTorrents();
+										} else {
+											query = '';
+										}
+									}}
+								/>
+							{:else}
+								<ul>
+									{#each filteredTorrents as torrent (torrent.id)}
+										<li class="ledger-row row-enter group">
+											<div class="flex items-start gap-1.5">
+												<div class="flex h-7 w-6 shrink-0 items-center justify-center">
+													<button
+														type="button"
+														class="grid size-6 shrink-0 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-ring"
+														aria-expanded={expandedTorrentId === torrent.id}
+														aria-label={`${expandedTorrentId === torrent.id ? 'Hide' : 'Show'} files for ${torrent.filename}`}
+														onclick={() => void toggleTorrentFiles(torrent)}
+													>
+														<CaretRight
+															class={`size-3.5 transition-transform duration-200 ${expandedTorrentId === torrent.id ? 'rotate-90' : ''}`}
+														/>
+													</button>
+												</div>
+												<div class="min-w-0 flex-1">
+													<div class="flex h-7 items-center justify-between gap-2 sm:gap-3">
+														<div class="flex min-w-0 flex-1 items-center gap-2">
+															<p
+																class="min-w-0 flex-1 truncate text-sm leading-5 font-medium tracking-tight"
+																title={torrent.filename}
+															>
+																{torrent.filename}
+															</p>
+															<span class="hidden shrink-0 sm:inline-flex"
+																><StatusBadge status={torrent.status} /></span
+															>
+															<span
+																class={`inline-flex shrink-0 items-center sm:hidden ${statusClass(torrent.status)}`}
+																aria-label={torrent.status.replaceAll('_', ' ')}
+																title={torrent.status.replaceAll('_', ' ')}
+															>
+																{#if torrent.status === 'downloaded'}
+																	<Check class="size-4" aria-hidden="true" />
+																{:else if ['error', 'magnet_error', 'virus', 'dead'].includes(torrent.status)}
+																	<WarningCircle class="size-4" aria-hidden="true" />
+																{:else if torrent.status === 'downloading'}
+																	<ArrowDown class="size-4" aria-hidden="true" />
+																{:else}
+																	<CircleNotch class="size-4" aria-hidden="true" />
+																{/if}
+															</span>
+														</div>
+														<div class="flex shrink-0 items-center gap-0.5">
+															{#if torrent.status === 'downloaded'}
+																{#if importedIds.includes(torrent.id)}
+																	<span
+																		class="grid size-7 place-items-center text-foreground"
+																		title="Added to downloads"
+																		aria-label="Added to downloads"
+																	>
+																		<Check class="size-3.5" />
+																	</span>
+																{:else}
+																	<Tooltip.Root>
+																		<Tooltip.Trigger>
+																			{#snippet child({ props })}
+																				<Button
+																					{...props}
+																					variant="ghost"
+																					size="icon-sm"
+																					class="size-7"
+																					aria-label={`Add ${torrent.filename} to downloads`}
+																					disabled={importingId === torrent.id}
+																					onclick={() => void importTorrent(torrent)}
+																				>
+																					{#if importingId === torrent.id}
+																						<CircleNotch class="size-3.5 animate-spin" />
+																					{:else}
+																						<Download class="size-3.5" />
+																					{/if}
+																				</Button>
+																			{/snippet}
+																		</Tooltip.Trigger>
+																		<Tooltip.Content>Add to downloads</Tooltip.Content>
+																	</Tooltip.Root>
+																{/if}
+															{/if}
+															<Tooltip.Root>
+																<Tooltip.Trigger>
+																	{#snippet child({ props })}
+																		<Button
+																			{...props}
+																			variant="ghost"
+																			size="icon-sm"
+																			class="size-7"
+																			aria-label={`Delete ${torrent.filename} from Real-Debrid`}
+																			onclick={() => requestDeleteRd(torrent)}
+																		>
+																			<Trash class="size-3.5" />
+																		</Button>
+																	{/snippet}
+																</Tooltip.Trigger>
+																<Tooltip.Content>Delete from Real-Debrid</Tooltip.Content>
+															</Tooltip.Root>
+														</div>
+													</div>
+													<div
+														class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs tabular-nums text-muted-foreground"
+													>
+														{#each metaParts(torrent) as part}
+															<span>{part}</span>
+														{/each}
+														{#if torrent.status !== 'downloaded'}
+															<span class="ml-auto shrink-0 text-xs font-medium text-foreground">
+																{Math.round(torrent.progress)}%
+															</span>
+														{/if}
+													</div>
+													{#if torrent.status !== 'downloaded'}
+														<div class={railClass(torrent.status)} aria-hidden="true">
+															<span
+																style={`width: ${Math.min(Math.max(torrent.progress, 0), 100)}%`}
+															></span>
+														</div>
+													{/if}
+													{#if expandedTorrentId === torrent.id}
+														<div class="mt-3 rounded-lg border border-border px-3 py-2">
+															{#if filesLoading === torrent.id}
+																<p
+																	class="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground"
+																>
+																	<CircleNotch class="size-3.5 animate-spin" /> Loading files…
+																</p>
+															{:else if filesError[torrent.id]}
+																<div class="flex items-center justify-between gap-3 px-1 py-1">
+																	<p
+																		class="min-w-0 flex-1 text-xs leading-relaxed text-destructive"
+																	>
+																		{filesError[torrent.id]}
+																	</p>
+																	<Button
+																		variant="ghost"
+																		size="xs"
+																		class="h-7 shrink-0"
+																		onclick={() => retryTorrentFiles(torrent)}>Retry</Button
+																	>
+																</div>
+															{:else if torrentFiles[torrent.id]?.length === 0}
+																<p class="px-1 py-2 text-xs text-muted-foreground">
+																	No constituent files reported.
+																</p>
+															{:else}
+																<ul class="divide-y divide-border/50">
+																	{#each torrentFiles[torrent.id] ?? [] as file (file.id ?? file.path)}
+																		<li class="flex items-center gap-2 py-1.5 text-xs">
+																			<span
+																				class="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+																				title={file.path ?? 'Unnamed file'}
+																				>{file.path ?? 'Unnamed file'}</span
+																			>
+																			<span
+																				class="shrink-0 font-mono text-muted-foreground tabular-nums"
+																				>{formatBytes(file.bytes ?? 0)}</span
+																			>
+																			<div class="flex shrink-0 items-center gap-0.5">
+																				{#if file.individually_downloadable && file.id != null}
+																					{@const stream =
+																						streamingLinks[`${torrent.id}:${file.id}`]}
+																					{#if stream?.status === 'loading'}
+																						<span
+																							class="grid size-7 place-items-center text-muted-foreground"
+																							aria-label="Checking streaming availability"
+																						>
+																							<CircleNotch class="size-3 animate-spin" />
+																						</span>
+																					{:else}
+																						<Tooltip.Root>
+																							<Tooltip.Trigger>
+																								{#snippet child({ props })}
+																									<Button
+																										{...props}
+																										variant="ghost"
+																										size="icon-sm"
+																										class="size-7"
+																										aria-label={`Play ${file.path ?? 'file'} in Real-Debrid`}
+																										onclick={() =>
+																											void openStreamingPage(torrent, file)}
+																									>
+																										<Play class="size-3.5" />
+																									</Button>
+																								{/snippet}
+																							</Tooltip.Trigger>
+																							<Tooltip.Content>Play in Real-Debrid</Tooltip.Content>
+																						</Tooltip.Root>
+																						<Tooltip.Root>
+																							<Tooltip.Trigger>
+																								{#snippet child({ props })}
+																									<Button
+																										{...props}
+																										variant="ghost"
+																										size="icon-sm"
+																										class="size-7"
+																										aria-label={`Show media info for ${file.path ?? 'file'}`}
+																										onclick={() =>
+																											void openStreamingDialog(torrent, file)}
+																									>
+																										<Info class="size-3.5" />
+																									</Button>
+																								{/snippet}
+																							</Tooltip.Trigger>
+																							<Tooltip.Content>Media info</Tooltip.Content>
+																						</Tooltip.Root>
+																					{/if}
+																					<Tooltip.Root>
+																						<Tooltip.Trigger>
+																							{#snippet child({ props })}
+																								<Button
+																									{...props}
+																									variant="ghost"
+																									size="icon-sm"
+																									class="size-7"
+																									disabled={file.id == null ||
+																										downloadingFileId !== null}
+																									aria-label={`Add ${file.path ?? 'file'} to downloads`}
+																									onclick={() =>
+																										void downloadTorrentFile(torrent, file)}
+																								>
+																									{#if downloadingFileId === `${torrent.id}:${file.id}`}
+																										<CircleNotch class="size-3.5 animate-spin" />
+																									{:else}
+																										<Download class="size-3.5" />
+																									{/if}
+																								</Button>
+																							{/snippet}
+																						</Tooltip.Trigger>
+																						<Tooltip.Content>Add file to downloads</Tooltip.Content>
+																					</Tooltip.Root>
+																				{/if}
+																			</div>
+																		</li>
+																	{/each}
+																</ul>
+															{/if}
+														</div>
+													{/if}
+												</div>
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
+						{#if !loading && !error && (filteredTorrents.length > 0 || page > 1)}
+							<div class="flex items-center justify-between gap-3 border-t border-border px-5 py-4">
+								<p class="min-w-0 truncate font-mono text-xs text-muted-foreground">
+									{torrentCountLabel} · Page {page}{#if pageCount != null}
+										of {pageCount}{/if}
+								</p>
+								<div
+									class="flex shrink-0 items-center gap-1.5"
+									role="navigation"
+									aria-label="Torrent pages"
+								>
+									<Button
+										variant="outline"
+										size="icon-xs"
+										disabled={page <= 1 || refreshing}
+										onclick={() => goToPage(1)}
+										aria-label="Go to first page"
+									>
+										<CaretDoubleLeft class="size-3.5" />
+									</Button>
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={page <= 1 || refreshing}
+										onclick={() => goToPage(page - 1)}
+										aria-label="Go to previous page"
+									>
+										<CaretLeft class="size-3.5" /> Previous
+									</Button>
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={!hasMore || refreshing}
+										onclick={() => goToPage(page + 1)}
+										aria-label="Go to next page"
+									>
+										Next <CaretRight class="size-3.5" />
+									</Button>
+								</div>
+							</div>
+						{/if}
+					</div>
+				</section>
+			</div>
+		</main>
+	</Tooltip.Provider>
 
 	<Dialog.Root bind:open={streamDialogOpen}>
 		<Dialog.Content class="gap-0 p-0 sm:max-w-[480px]">
@@ -725,15 +937,20 @@
 			</div>
 			<div class="max-h-[60vh] space-y-4 overflow-y-auto px-5 pb-5">
 				{#if streamDialogLoading || (activeStreamKey && streamingLinks[activeStreamKey]?.status === 'loading')}
-					<p class="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" /> Loading streaming versions…</p>
+					<p class="flex items-center gap-2 text-xs text-muted-foreground">
+						<CircleNotch class="size-3.5 animate-spin" /> Loading streaming versions…
+					</p>
 				{:else if activeStreamKey && streamingData[activeStreamKey]}
 					{@const options = streamingData[activeStreamKey]}
 					{@const summary = mediaSummary(options.media_infos)}
 					{#if summary.type || summary.duration !== undefined || summary.audio.length > 0 || summary.subs.length > 0}
-						<div class="space-y-2 rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+						<div
+							class="space-y-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+						>
 							{#if summary.type || summary.duration !== undefined}
 								<p>
-									{#if summary.type}Type: {summary.type} · {/if}
+									{#if summary.type}Type: {summary.type} ·
+									{/if}
 									{#if summary.duration !== undefined}Duration: {Math.round(summary.duration)}s{/if}
 								</p>
 							{/if}
@@ -758,11 +975,18 @@
 								</div>
 							{/if}
 							{#if summary.audio.length > 0 || summary.subs.length > 0}
-								<p class="text-[11px]">The Real-Debrid player lets you choose the available tracks.</p>
+								<p class="text-[11px]">
+									The Real-Debrid player lets you choose the available tracks.
+								</p>
 							{/if}
 						</div>
 					{/if}
-					<a href={options.streaming_url} target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-md border border-border/50 px-3 py-2 text-xs hover:bg-muted">
+					<a
+						href={options.streaming_url}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="flex items-center justify-center gap-2 rounded-md border border-border/50 px-3 py-2 text-xs hover:bg-muted"
+					>
 						<Play class="size-3.5" /> Open Real-Debrid player
 					</a>
 				{:else}
@@ -773,24 +997,29 @@
 	</Dialog.Root>
 
 	<Dialog.Root bind:open={deleteRdDialogOpen}>
-			<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">
-				<div class="px-5 pt-5 pr-12 pb-4">
-					<Dialog.Header>
-						<Dialog.Title>Delete from Real-Debrid?</Dialog.Title>
-						<Dialog.Description>
-							{pendingDeleteRd?.filename ?? 'This torrent'} will be permanently removed from your
-							Real-Debrid account.
-						</Dialog.Description>
-					</Dialog.Header>
-				</div>
-				<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
+		<Dialog.Content class="gap-0 p-0 sm:max-w-[420px]">
+			<div class="px-5 pt-5 pr-12 pb-4">
+				<Dialog.Header>
+					<Dialog.Title>Delete from Real-Debrid?</Dialog.Title>
+					<Dialog.Description>
+						{pendingDeleteRd?.filename ?? 'This torrent'} will be permanently removed from your Real-Debrid
+						account.
+					</Dialog.Description>
+				</Dialog.Header>
+			</div>
+			<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
 				<Dialog.Close>
 					{#snippet child({ props })}
 						<Button variant="outline" size="sm" {...props}>Keep</Button>
 					{/snippet}
 				</Dialog.Close>
-				<Button variant="destructive" size="sm" disabled={deletingRd} onclick={() => void confirmDeleteRd()}>
-					{#if deletingRd}<Loader2 class="size-3.5 animate-spin" /> Deleting…{:else}Delete{/if}
+				<Button
+					variant="destructive"
+					size="sm"
+					disabled={deletingRd}
+					onclick={() => void confirmDeleteRd()}
+				>
+					{#if deletingRd}<CircleNotch class="size-3.5 animate-spin" /> Deleting…{:else}Delete{/if}
 				</Button>
 			</Dialog.Footer>
 		</Dialog.Content>

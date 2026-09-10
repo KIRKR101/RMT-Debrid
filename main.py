@@ -576,7 +576,23 @@ async def list_rd_torrents(
         has_more = len(items) > limit
     else:
         has_more = len(items) >= limit
-    return {"torrents": items[:limit], "page": page, "limit": limit, "has_more": has_more}
+    page_items = items[:limit]
+    # Real-Debrid does not expose a total while more pages remain. Keep the
+    # metadata honest: totals are available on the last page, while the
+    # returned count and both pagination aliases are always scoped to the
+    # requested filter.
+    total = len(page_items) if not has_more else None
+    page_count = page if not has_more else None
+    return {
+        "torrents": page_items,
+        "page": page,
+        "limit": limit,
+        "returned_count": len(page_items),
+        "total": total,
+        "page_count": page_count,
+        "has_more": has_more,
+        "has_next": has_more,
+    }
 
 @app.get("/api/rd/torrents/{torrent_id}")
 async def get_rd_torrent(torrent_id: str, auth=Depends(verify_api_key)):
