@@ -71,6 +71,32 @@ async def search_titles(query: str, media_type: Optional[str] = None) -> List[Di
     return results
 
 
+async def get_title_details(media_type: str, imdb_id: str) -> Dict[str, object]:
+    if not rd_api.http_client:
+        raise RuntimeError("HTTP client not ready")
+    kind = "series" if media_type == "series" else "movie"
+    url = f"https://v3-cinemeta.strem.io/meta/{kind}/{imdb_id}.json"
+    try:
+        response = await rd_api.http_client.get(url, timeout=rd_api.HTTPX_TIMEOUT, headers={"User-Agent": "RMT-Debrid"})
+        response.raise_for_status()
+        meta = response.json().get("meta", {})
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RuntimeError(f"Title details failed: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise RuntimeError("Title details unavailable")
+    genres = [str(genre) for genre in (meta.get("genres") or []) if genre][:3]
+    return {
+        "imdb_id": imdb_id,
+        "name": str(meta.get("name") or ""),
+        "genres": genres,
+        "runtime": str(meta.get("runtime") or ""),
+        "description": str(meta.get("description") or ""),
+        "rating": str(meta.get("imdbRating") or ""),
+        "poster": str(meta.get("poster") or ""),
+        "year": str(meta.get("year") or meta.get("releaseInfo") or ""),
+    }
+
+
 async def search(media_type: str, imdb_id: str, season: Optional[int] = None, episode: Optional[int] = None) -> List[Dict[str, str]]:
     content_id = imdb_id
     if media_type == "series" and (season is not None or episode is not None):

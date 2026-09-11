@@ -519,6 +519,22 @@ async def discover_titles(q: str = Query(..., min_length=2, max_length=100), typ
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/discover/{media_type}/{imdb_id}/details")
+async def discover_details(
+    media_type: str,
+    imdb_id: str,
+    auth=Depends(verify_api_key),
+):
+    if media_type not in {"movie", "series"}:
+        raise HTTPException(status_code=400, detail="Media type must be movie or series")
+    if not re.fullmatch(r"tt\d+", imdb_id):
+        raise HTTPException(status_code=400, detail="A valid IMDb ID is required")
+    try:
+        return await torrentio.get_title_details(media_type, imdb_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/discover/{media_type}/{imdb_id}")
 async def discover(
     media_type: str,
