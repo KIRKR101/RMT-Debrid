@@ -1,10 +1,12 @@
 <script lang="ts">
 	import {
+		ArrowCounterClockwise,
 		Check,
 		Download,
 		FilmSlate,
 		CircleNotch,
 		MagnifyingGlass,
+		Star,
 		Television,
 		Upload,
 		X
@@ -26,7 +28,22 @@
 	import { toast } from 'svelte-sonner';
 	import SiteHeader from '$lib/components/site-header.svelte';
 
-	type Title = { imdb_id: string; title: string; year: string; media_type: 'movie' | 'series' };
+	type Title = {
+		imdb_id: string;
+		title: string;
+		year: string;
+		media_type: 'movie' | 'series';
+		poster?: string;
+	};
+	type TitleDetails = {
+		name: string;
+		genres: string[];
+		runtime: string;
+		description: string;
+		rating: string;
+		poster: string;
+		year: string;
+	};
 	type Release = {
 		info_hash: string;
 		title: string;
@@ -40,6 +57,8 @@
 	let titles = $state<Title[]>([]);
 	let searched = $state(false);
 	let selected = $state<Title | null>(null);
+	let selectedDetails = $state<TitleDetails | null>(null);
+	let detailsLoading = $state(false);
 	let season = $state<number | undefined>(undefined);
 	let episode = $state<number | undefined>(undefined);
 	let releases = $state<Release[]>([]);
@@ -105,6 +124,24 @@
 			? `${releases.length}`
 			: `${filteredReleases.length} of ${releases.length}`
 	);
+	const selectedMetaLine = $derived(
+		selected
+			? [
+					selected.year || selectedDetails?.year || '',
+					...(selectedDetails?.genres ?? []),
+					selectedDetails?.runtime || '',
+					selected.media_type === 'movie' ? '' : 'TV show'
+				].filter(Boolean)
+			: []
+	);
+	const selectedMetaLineShort = $derived(
+		selected
+			? [
+					selected.year || selectedDetails?.year || '',
+					...(selectedDetails?.genres ?? []).slice(0, 1)
+				].filter(Boolean)
+			: []
+	);
 
 	async function searchTitles() {
 		if (query.trim().length < 2 || searching) return;
@@ -114,6 +151,7 @@
 		releaseError = '';
 		titles = [];
 		selected = null;
+		selectedDetails = null;
 		releases = [];
 		try {
 			const response = await fetch(
@@ -139,7 +177,37 @@
 		releases = [];
 		releaseError = '';
 		clearFilters();
+		selectedDetails = null;
+		void loadTitleDetails(title);
 		if (title.media_type === 'movie') await loadReleases();
+	}
+
+	async function loadTitleDetails(title: Title) {
+		detailsLoading = true;
+		try {
+			const response = await fetch(
+				`/api/discover/${title.media_type}/${title.imdb_id}/details`
+			);
+			const data = await response.json();
+			if (!response.ok) return;
+			if (selected?.imdb_id !== title.imdb_id) return;
+			selectedDetails = data as TitleDetails;
+		} catch {
+			// Details are enhancement-only; the card still works without them.
+		} finally {
+			if (selected?.imdb_id === title.imdb_id) detailsLoading = false;
+		}
+	}
+
+	function clearSelection() {
+		selected = null;
+		selectedDetails = null;
+		season = undefined;
+		episode = undefined;
+		episodeError = '';
+		releases = [];
+		releaseError = '';
+		clearFilters();
 	}
 
 	async function loadReleases() {
@@ -453,14 +521,12 @@
 				<div class="section-heading">
 					<h2 class="text-sm font-semibold tracking-tight">Finding titles</h2>
 				</div>
-				<div class="grid gap-3 sm:grid-cols-2">
-					{#each [0, 1, 2, 3] as i (i)}
-						<div
-							class="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3.5"
-						>
-							<Skeleton class="size-8 shrink-0 rounded-md" />
-							<div class="min-w-0 flex-1">
-								<Skeleton class="h-3.5 w-2/3" /><Skeleton class="mt-2 h-3 w-1/3" />
+				<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+					{#each [0, 1, 2, 3, 4] as i (i)}
+						<div class="overflow-hidden rounded-lg border border-border bg-card">
+							<Skeleton class="aspect-[2/3] w-full rounded-none" />
+							<div class="grid gap-2 p-3">
+								<Skeleton class="h-3.5 w-3/4" /><Skeleton class="h-3 w-1/3" />
 							</div>
 						</div>
 					{/each}
@@ -478,39 +544,110 @@
 			</div>
 		{/if}
 		{#if titles.length}
-			<section class="grid gap-3" aria-label="Title results">
-				<div class="section-heading">
-					<h2 class="text-sm font-semibold tracking-tight">Choose a title</h2>
-					<span class="shrink-0 font-mono text-xs font-normal text-muted-foreground"
-						>{titles.length} matches</span
-					>
-				</div>
-				<div class="grid gap-3 sm:grid-cols-2">
-					{#each titles as title (title.imdb_id)}
-						<button
-							type="button"
-							class={`group flex min-w-0 cursor-pointer items-center gap-3 rounded-lg border px-4 py-3.5 text-left transition-colors duration-150 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-ring ${selected?.imdb_id === title.imdb_id ? 'border-muted-foreground/40 bg-muted/40' : 'border-border bg-card hover:bg-muted/40'}`}
-							onclick={() => chooseTitle(title)}
-							aria-pressed={selected?.imdb_id === title.imdb_id}
+			{#if selected}
+				{@const poster = selected.poster || selectedDetails?.poster || ''}
+				<section class="flex overflow-hidden rounded-lg border border-border bg-card" aria-label="Selected title">
+					{#if poster}
+						<img
+							src={poster}
+							alt={`Poster for ${selected.title}`}
+							loading="lazy"
+							referrerpolicy="no-referrer"
+							class="w-20 shrink-0 self-stretch bg-muted object-cover sm:w-32"
+						/>
+					{:else}
+						<span
+							class="grid w-20 shrink-0 place-items-center self-stretch bg-muted text-muted-foreground sm:w-32"
+							aria-hidden="true"
+							>{#if selected.media_type === 'movie'}<FilmSlate class="size-6" />{:else}<Television
+									class="size-6"
+								/>{/if}</span
 						>
-							<span
-								class="grid size-8 shrink-0 place-items-center rounded-md border border-border text-muted-foreground"
-								>{#if title.media_type === 'movie'}<FilmSlate class="size-4" />{:else}<Television
-										class="size-4"
-									/>{/if}</span
+					{/if}
+					<div class="flex min-w-0 flex-1 flex-col gap-1.5 p-3 sm:gap-2 sm:p-5">
+						<div class="min-w-0">
+							<h3 class="truncate text-base leading-6 font-semibold tracking-tight sm:text-lg" title={selected.title}>{selected.title}</h3>
+							<p class="mt-1 truncate font-mono text-xs tabular-nums text-muted-foreground sm:hidden">
+								{selectedMetaLineShort.length ? selectedMetaLineShort.join(' · ') : 'Year unknown'}
+							</p>
+							<p class="mt-1 hidden font-mono text-xs tabular-nums text-muted-foreground sm:block">
+								{selectedMetaLine.length ? selectedMetaLine.join(' · ') : 'Year unknown'}
+							</p>
+						</div>
+						{#if detailsLoading}
+							<div class="hidden gap-2 sm:grid" aria-hidden="true">
+								<Skeleton class="h-3.5 w-full" /><Skeleton class="h-3.5 w-5/6" />
+							</div>
+						{:else if selectedDetails?.description}
+							<p class="hidden max-w-[62ch] text-sm leading-6 text-muted-foreground sm:line-clamp-3">
+								{selectedDetails.description}
+							</p>
+						{/if}
+						<div class="mt-auto flex items-center justify-between gap-3 pt-1">
+							{#if !detailsLoading && selectedDetails?.rating}
+								<span class="flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground">
+									<Star weight="fill" class="size-3.5 text-amber-500" aria-hidden="true" />{selectedDetails.rating}
+								</span>
+							{:else}
+								<span></span>
+							{/if}
+							<Button variant="ghost" size="xs" class="h-7 shrink-0 text-muted-foreground hover:text-foreground" onclick={clearSelection}>
+								<ArrowCounterClockwise class="size-3.5" /><span class="sm:hidden">Change</span><span class="hidden sm:inline">Choose different</span>
+							</Button>
+						</div>
+					</div>
+				</section>
+			{:else}
+				<section class="grid gap-3" aria-label="Title results">
+					<div class="section-heading">
+						<h2 class="text-sm font-semibold tracking-tight">Choose a title</h2>
+						<span class="shrink-0 font-mono text-xs font-normal text-muted-foreground"
+							>{titles.length} matches</span
+						>
+					</div>
+					<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+						{#each titles as title (title.imdb_id)}
+							<button
+								type="button"
+								class="group min-w-0 cursor-pointer overflow-hidden rounded-lg border border-border bg-card text-left transition-colors duration-150 hover:bg-muted/40 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-ring"
+								onclick={() => chooseTitle(title)}
+								aria-label={`Select ${title.title}`}
 							>
-							<span class="min-w-0 flex-1"
-								><span
-									class="block truncate text-sm leading-5 font-medium tracking-tight"
-									title={title.title}>{title.title}</span
-								><span class="mt-0.5 block font-mono text-xs tabular-nums text-muted-foreground"
-									>{title.year || 'Year unknown'} · {title.imdb_id}</span
-								></span
-							>
-						</button>
-					{/each}
-				</div>
-			</section>
+								<span class="block aspect-[2/3] w-full overflow-hidden bg-muted">
+									{#if title.poster}
+										<img
+											src={title.poster}
+											alt={`Poster for ${title.title}`}
+											loading="lazy"
+											referrerpolicy="no-referrer"
+											class="size-full object-cover transition-transform duration-150 group-hover:scale-[1.02]"
+										/>
+									{:else}
+										<span
+											class="grid size-full place-items-center text-muted-foreground"
+											aria-hidden="true"
+											>{#if title.media_type === 'movie'}<FilmSlate class="size-6" />{:else}<Television
+													class="size-6"
+												/>{/if}</span
+										>
+									{/if}
+								</span>
+								<span class="block p-3">
+									<span
+										class="block truncate text-sm leading-5 font-medium tracking-tight"
+										title={title.title}>{title.title}</span
+									>
+									<span
+										class="mt-0.5 block font-mono text-xs tabular-nums text-muted-foreground"
+										>{title.year || 'Year unknown'} ·
+										{title.media_type === 'movie' ? 'Movie' : 'TV'}</span
+									>
+								</span>
+							</button>
+						{/each}
+					</div>
+				</section>
+			{/if}
 		{/if}
 
 		{#if selected?.media_type === 'series'}
@@ -595,7 +732,7 @@
 						>
 					</div>
 				</div>
-				<div class="grid gap-3 rounded-lg border border-border p-2.5 sm:p-3">
+				<div class="grid gap-3 rounded-lg border border-border bg-card p-2.5 sm:p-3">
 					<div class="relative min-w-0">
 						<MagnifyingGlass
 							class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground"
