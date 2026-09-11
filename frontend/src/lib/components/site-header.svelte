@@ -22,7 +22,8 @@
 		Gear,
 		Check,
 		WarningCircle,
-		List
+		List,
+		SignOut
 	} from 'phosphor-svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
@@ -309,7 +310,7 @@
 								>{account.username}</DropdownMenu.Label
 							>
 							<DropdownMenu.Separator />
-							<DropdownMenu.Item onclick={logout}>Sign out</DropdownMenu.Item>
+							<DropdownMenu.Item onclick={logout}><SignOut class="size-3.5" />Sign out</DropdownMenu.Item>
 						</DropdownMenu.Content>
 					</DropdownMenu.Root>
 				{:else if accountError}
@@ -363,10 +364,10 @@
 							>{account?.username ?? 'RMT-Debrid'}</DropdownMenu.Label
 						>
 						<DropdownMenu.Separator />
-						<DropdownMenu.Item onclick={openStorage}>Storage diagnostics</DropdownMenu.Item>
-						<DropdownMenu.Item onclick={openDetails}>Settings</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={openStorage}><HardDrives class="size-3.5" />Storage</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={openDetails}><Gear class="size-3.5" />Settings</DropdownMenu.Item>
 						<DropdownMenu.Separator />
-						<DropdownMenu.Item onclick={logout}>Sign out</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={logout}><SignOut class="size-3.5" />Sign out</DropdownMenu.Item>
 					</DropdownMenu.Content>
 				</DropdownMenu.Root>
 			</div>
