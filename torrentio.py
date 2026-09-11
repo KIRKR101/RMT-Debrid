@@ -49,10 +49,18 @@ async def search_titles(query: str, media_type: Optional[str] = None) -> List[Di
         kind = str(item.get("q", "")).lower()
         if kind not in {"feature", "tv series", "tv mini series", "tv movie", "tv special", "tvseries", "tvminiseries", "tvmovie"}:
             continue
+        image = item.get("i")
+        if isinstance(image, dict):
+            poster = str(image.get("imageUrl") or "")
+        elif isinstance(image, list) and image and isinstance(image[0], str):
+            poster = image[0]
+        else:
+            poster = ""
         result = {
             "imdb_id": item["id"],
             "title": str(item.get("l") or item["id"]),
             "year": str(item.get("y") or ""),
+            "poster": poster,
             "media_type": "series" if kind.startswith("tv ") and kind not in {"tv movie", "tv special"} or kind in {"tvseries", "tvminiseries"} else "movie",
         }
         if media_type and result["media_type"] != media_type:
