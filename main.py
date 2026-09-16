@@ -593,7 +593,7 @@ async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)
 
 
 class RdKeyCheck(BaseModel):
-    rd_api_key: str = Field(min_length=1, max_length=256)
+    rd_api_key: str = ""
 
 
 @app.post("/api/setup/check-rd")
@@ -601,7 +601,7 @@ async def setup_check_rd(payload: RdKeyCheck):
     """Validate a Real-Debrid key during first-run setup without saving it."""
     if config.is_configured():
         raise HTTPException(status_code=409, detail="Already configured")
-    result = await rd_api.validate_token(payload.rd_api_key)
+    result = await rd_api.validate_token(payload.rd_api_key.strip())
     if "error" in result:
         status_code = 401 if result.get("status_code") == 401 else 502
         raise HTTPException(status_code=status_code, detail=str(result["error"]))
@@ -696,7 +696,12 @@ class SetupRequest(BaseModel):
 
 @app.get("/api/setup/status")
 async def setup_status():
-    return {"setup_required": not config.is_configured(), "version": config.APP_VERSION}
+    return {
+        "setup_required": not config.is_configured(),
+        "default_download_folder": config.DOWNLOAD_FOLDER,
+        "default_max_concurrent_downloads": config.MAX_CONCURRENT_DOWNLOADS,
+        "version": config.APP_VERSION,
+    }
 
 
 @app.post("/api/setup")
