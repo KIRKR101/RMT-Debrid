@@ -24,7 +24,39 @@ def _webhook_events(value):
     return [event.strip() for event in values if event.strip() in WEBHOOK_EVENT_NAMES]
 
 # --- Configuration & Setup ---
-load_dotenv()
+# For frozen binaries, also load .env next to the exe and inside the data dir,
+# so binary-only users can configure via files without a shell env.
+# Precedence (OS env always wins): exe-dir/.env < data-dir/.env < cwd/.env
+def _load_env_files():
+    # Precedence (highest wins): OS env > data-dir/.env > exe-dir/.env > cwd/.env
+    import copy as _copy
+
+    try:
+        from paths import exe_dir as _exe_dir, get_data_dir as _get_data_dir
+    except ImportError:
+        load_dotenv()
+        return
+    _os_env = _copy.deepcopy(os.environ)
+    try:
+        _exe_env = _exe_dir() / ".env"
+        if _exe_env.is_file():
+            load_dotenv(_exe_env, override=False)
+    except OSError:
+        pass
+    # Re-resolve after exe .env (it may set RMT_DATA_DIR).
+    try:
+        _data_env = _get_data_dir() / ".env"
+        if _data_env.is_file():
+            load_dotenv(_data_env, override=True)
+    except OSError:
+        pass
+    # Restore real OS env so file values never beat exported variables.
+    for _key, _value in _os_env.items():
+        os.environ[_key] = _value
+    load_dotenv(override=False)
+
+
+_load_env_files()
 
 from paths import ensure_writable_or_fallback, get_data_dir
 

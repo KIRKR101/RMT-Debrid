@@ -15,6 +15,15 @@ from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 
+# --data-dir must apply before config.py resolves DATA_DIR at import time.
+# Pre-parse it here (full argparse happens in __main__); OS env RMT_DATA_DIR
+# still wins if both are set since config prefers explicit env.
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--data-dir" and _i + 1 < len(sys.argv):
+        os.environ.setdefault("RMT_DATA_DIR", sys.argv[_i + 1])
+    elif _arg.startswith("--data-dir="):
+        os.environ.setdefault("RMT_DATA_DIR", _arg.split("=", 1)[1])
+
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -1121,7 +1130,7 @@ async def delete_download(download_id: str, delete_local: bool = False, auth=Dep
 async def websocket_endpoint(websocket: WebSocket):
     session = websocket.cookies.get(AUTH_COOKIE)
     session_valid = bool(session and sessions.get(session, 0) > time.time())
-    legacy_valid = bool(config.API_KEY and websocket.headers.get("x-api-key") == config.API_KEY)
+    legacy_valid = bool(websocket.headers.get("x-api-key") in _api_keys())
     if config.APP_PASSWORD and not (session_valid or legacy_valid):
         await websocket.close(code=1008, reason="Authentication required")
         return
@@ -1170,12 +1179,8 @@ if __name__ == "__main__":
     import uvicorn
 
     _args = _parse_cli_args()
-    # --data-dir must win before anything else reads DATA_DIR-dependent paths.
-    # Re-exec is avoided: config already resolved DATA_DIR at import, so here we
-    # only honour host/port/reload overrides plus an explicit env check.
-    if os.getenv("RMT_DATA_DIR") != _args.data_dir and _args.data_dir != str(get_data_dir()):
-        os.environ["RMT_DATA_DIR"] = _args.data_dir
-        logging.warning("RMT_DATA_DIR changed via --data-dir; restart with the env var set to apply fully.")
+    # DATA_DIR was already resolved at import (with --data-dir pre-parsed above),
+    # so just log it here. RMT_DATA_DIR env wins if both are set.
     # File logging for headless/exe runs (alongside console).
     try:
         _handler = logging.FileHandler(str(Path(_args.data_dir).expanduser() / "rmt-debrid.log"))
