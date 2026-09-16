@@ -176,11 +176,8 @@
 			rdCheck = {
 				state: 'ok',
 				username: typeof data.username === 'string' ? data.username : 'Unknown account',
-				accountType: typeof data.type === 'string' && data.type ? data.type : '',
-				expiration:
-					typeof data.expiration === 'string' && data.expiration
-						? ` · valid until ${data.expiration}`
-						: ''
+				accountType: typeof data.type === 'string' ? data.type : '',
+				expiration: typeof data.expiration === 'string' ? data.expiration : ''
 			};
 		} catch (error) {
 			rdCheck = { state: 'error', message: error instanceof Error ? error.message : 'Key check failed' };
@@ -849,12 +846,8 @@
 								<p class="flex items-center gap-1.5 text-xs text-foreground" role="status">
 									<Check class="size-3.5" aria-hidden="true" />
 									<span
-										>Connected as <strong class="font-semibold">{rdCheck.username}</strong>{#if rdCheck.accountType}<span
-												class="text-muted-foreground"
-											>
-												· {rdCheck.accountType}</span
-											>{/if}<span class="text-muted-foreground">{rdCheck.expiration}</span
-										></span
+										>Connected as {rdCheck.username}{#if rdCheck.accountType} · {rdCheck.accountType}{/if}{#if rdCheck.expiration}
+											· valid until {rdCheck.expiration}{/if}</span
 									>
 								</p>
 							{:else if rdCheck?.state === 'error'}
@@ -909,20 +902,24 @@
 					</div>
 				</section>
 
-				<section
-					aria-labelledby="setup-access-heading"
-					class="rounded-lg border border-border bg-card p-5"
-				>
-					<div class="flex items-baseline gap-2.5">
+				<details class="group rounded-lg border border-border bg-card" name="setup-optional">
+					<summary
+						aria-labelledby="setup-access-heading"
+						class="flex cursor-pointer items-baseline gap-2.5 p-5 [&::-webkit-details-marker]:hidden"
+					>
+						<CaretRight
+							class="size-3.5 shrink-0 self-center text-muted-foreground transition-transform duration-200 group-open:rotate-90"
+							aria-hidden="true"
+						/>
 						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">3</span>
-						<h2 id="setup-access-heading" class="text-sm font-semibold tracking-tight">
+						<span id="setup-access-heading" role="heading" aria-level="2" class="text-sm font-semibold tracking-tight">
 							Who can open this
-						</h2>
+						</span>
 						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
 							>OPTIONAL</span
 						>
-					</div>
-					<div class="mt-4 grid gap-1.5">
+					</summary>
+					<div class="grid gap-1.5 px-5 pb-5">
 						<label for="setup-password" class="text-[13px] leading-none font-medium"
 							>Household password</label
 						>
@@ -939,26 +936,31 @@
 							one if the page is reachable beyond your household.
 						</p>
 					</div>
-				</section>
+				</details>
 
-				<section
-					aria-labelledby="setup-discover-heading"
-					class="rounded-lg border border-border bg-card p-5"
-				>
-					<div class="flex items-baseline gap-2.5">
+				<details class="group rounded-lg border border-border bg-card" name="setup-optional">
+					<summary
+						aria-labelledby="setup-discover-heading"
+						class="flex cursor-pointer items-baseline gap-2.5 p-5 [&::-webkit-details-marker]:hidden"
+					>
+						<CaretRight
+							class="size-3.5 shrink-0 self-center text-muted-foreground transition-transform duration-200 group-open:rotate-90"
+							aria-hidden="true"
+						/>
 						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">4</span>
-						<h2 id="setup-discover-heading" class="text-sm font-semibold tracking-tight">
+						<span id="setup-discover-heading" role="heading" aria-level="2" class="text-sm font-semibold tracking-tight">
 							Finding releases
-						</h2>
+						</span>
 						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
 							>OPTIONAL</span
 						>
-					</div>
-					<p class="mt-1.5 text-[13px] leading-5 text-muted-foreground">
-						The Discover page works out of the box. Add Prowlarr to search your own
-						indexers, or shape Torrentio results with a filter.
-					</p>
-					<div class="mt-4 grid gap-4">
+					</summary>
+					<div class="px-5 pb-5">
+						<p class="text-[13px] leading-5 text-muted-foreground">
+							The Discover page works out of the box. Add Prowlarr to search your own
+							indexers, or shape Torrentio results with a filter.
+						</p>
+						<div class="mt-4 grid gap-4">
 						<div class="grid gap-1.5">
 							<label for="setup-prowlarr-url" class="text-[13px] leading-none font-medium"
 								>Prowlarr URL</label
@@ -1099,22 +1101,27 @@
 							</div>
 						</div>
 					</div>
-				</section>
+				</div>
+				</details>
 
-				<section
-					aria-labelledby="setup-notify-heading"
-					class="rounded-lg border border-border bg-card p-5"
-				>
-					<div class="flex items-baseline gap-2.5">
+				<details class="group rounded-lg border border-border bg-card" name="setup-optional">
+					<summary
+						aria-labelledby="setup-notify-heading"
+						class="flex cursor-pointer items-baseline gap-2.5 p-5 [&::-webkit-details-marker]:hidden"
+					>
+						<CaretRight
+							class="size-3.5 shrink-0 self-center text-muted-foreground transition-transform duration-200 group-open:rotate-90"
+							aria-hidden="true"
+						/>
 						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">5</span>
-						<h2 id="setup-notify-heading" class="text-sm font-semibold tracking-tight">
+						<span id="setup-notify-heading" role="heading" aria-level="2" class="text-sm font-semibold tracking-tight">
 							Notifications
-						</h2>
+						</span>
 						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
 							>OPTIONAL</span
 						>
-					</div>
-					<div class="mt-4 grid gap-1.5">
+					</summary>
+					<div class="grid gap-1.5 px-5 pb-5">
 						<label for="setup-webhook" class="text-[13px] leading-none font-medium"
 							>Completion webhook</label
 						>
@@ -1153,7 +1160,7 @@
 							{/if}
 						</div>
 					</div>
-				</section>
+				</details>
 
 				{#if setupError}
 					<div
