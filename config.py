@@ -100,15 +100,24 @@ def _normalize_keys(values: dict) -> dict:
 
 
 def _resolve_config_path() -> Path:
-    """Explicit path > portable exe-adjacent > user config directory."""
+    """Explicit path > existing portable file > user config directory.
+
+    Read order never orphans an existing file. When creating fresh, portable
+    contexts (frozen exe or explicit RMT_DATA_DIR) default to
+    <data_dir>/config.toml so the bundle stays self-contained; otherwise the
+    OS user config directory is used.
+    """
     for variable in ("RMT_CONFIG_FILE", "CONFIG_FILE"):
         override = os.getenv(variable)
         if override:
             return Path(override).expanduser()
     try:
         from paths import exe_dir, is_frozen
+
+        frozen = is_frozen()
     except ImportError:  # pragma: no cover
-        exe_dir = is_frozen = None  # type: ignore
+        exe_dir = None  # type: ignore
+        frozen = False
     try:
         data_toml = DATA_DIR / "config.toml"
         if data_toml.is_file():
@@ -117,12 +126,17 @@ def _resolve_config_path() -> Path:
             exe_toml = exe_dir() / "config.toml"
             if exe_toml.is_file():
                 return exe_toml
-        if is_frozen is not None and not is_frozen():
+        if not frozen:
             cwd_toml = Path.cwd() / "config.toml"
             if cwd_toml.is_file():
                 return cwd_toml
+        user_toml = user_config_dir() / "config.toml"
+        if user_toml.is_file():
+            return user_toml
     except OSError:
         pass
+    if os.getenv("RMT_DATA_DIR") or frozen:
+        return DATA_DIR / "config.toml"
     return user_config_dir() / "config.toml"
 
 

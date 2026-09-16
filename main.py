@@ -1195,4 +1195,9 @@ if __name__ == "__main__":
     except OSError:
         logging.warning("Could not attach file log handler")
     logging.info("Starting RMT-Debrid v%s (data_dir=%s)", config.APP_VERSION, _args.data_dir)
-    uvicorn.run("main:app", host=_args.host, port=_args.port, reload=_args.reload)
+    if getattr(sys, "frozen", False):
+        # Frozen (PyInstaller): no importable "main" module on sys.path, so
+        # pass the app object directly. Reload is meaningless in a bundle.
+        uvicorn.run(app, host=_args.host, port=_args.port, reload=False)
+    else:
+        uvicorn.run("main:app", host=_args.host, port=_args.port, reload=_args.reload)
