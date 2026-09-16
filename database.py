@@ -1,12 +1,26 @@
 from sqlmodel import SQLModel, create_engine, Session, select
 from typing import List, Optional
-from config import DATABASE_URL
+import os
+import shutil
+import time
+from config import DATABASE_URL, DATA_DIR
 from models import DownloadTask
 
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False, "timeout": 30})
+
+_SQLITE_PATH = DATABASE_URL[len("sqlite:///"):] if DATABASE_URL.startswith("sqlite:///") else None
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+    # SQLite-only tunables for homelab reliability (WAL survives crashes better
+    # under concurrent readers like health checks + WebSocket loops).
+    if DATABASE_URL.startswith("sqlite"):
+        with engine.connect() as connection:
+            from sqlalchemy import text
+            connection.execute(text("PRAGMA journal_mode=WAL"))
+            connection.execute(text("PRAGMA busy_timeout=30000"))
+            connection.execute(text("PRAGMA synchronous=NORMAL"))
+            connection.commit()
     # create_all does not add columns to an existing SQLite database.
     # Keep this small migration here so upgrades remain safe for existing installs.
     if DATABASE_URL.startswith("sqlite"):
@@ -59,3 +73,28 @@ def get_all_tasks() -> List[DownloadTask]:
 def get_task(task_id: str) -> Optional[DownloadTask]:
     with Session(engine) as session:
         return session.get(DownloadTask, task_id)
+
+
+def backup_db(keep: int = 7) -> Optional[str]:
+    """Create a timestamped SQLite backup under <data_dir>/backups. SQLite-only."""
+    if not _SQLITE_PATH:
+        return None
+    try:
+        src = _SQLITE_PATH
+        if not os.path.isfile(src):
+            return None
+        backup_dir = os.path.join(str(DATA_DIR), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        dest = os.path.join(backup_dir, f"downloads-{time.strftime('%Y%m%d-%H%M%S')}.db")
+        shutil.copy2(src, dest)
+        existing = sorted(
+            f for f in os.listdir(backup_dir) if f.startswith("downloads-") and f.endswith(".db")
+        )
+        for stale in existing[: max(0, len(existing) - keep)]:
+            try:
+                os.remove(os.path.join(backup_dir, stale))
+            except OSError:
+                pass
+        return dest
+    except OSError:
+        return None

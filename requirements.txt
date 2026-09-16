@@ -9,3 +9,5 @@ websockets
 wsproto
 sqlmodel
 tenacity
+tomli
+tomli-w

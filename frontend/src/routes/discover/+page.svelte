@@ -938,9 +938,6 @@
 	<Dialog.Content showCloseButton={true} class="gap-3 p-4 sm:max-w-[520px]">
 		<Dialog.Header>
 			<Dialog.Title>Select files for {selectionTaskName}</Dialog.Title>
-			<Dialog.Description
-				>Choose at least one file before this torrent can start.</Dialog.Description
-			>
 		</Dialog.Header>
 		<div class="max-h-[55vh] overflow-y-auto">
 			{#if selectionLoading}

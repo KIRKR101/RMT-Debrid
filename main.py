@@ -8,12 +8,28 @@ from ctypes import wintypes
 import json
 import os
 import re
+import ipaddress
+import socket
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
+
+# --data-dir / --config must apply before config.py resolves paths at import.
+# Pre-parse them here (full argparse happens in __main__); OS env
+# RMT_DATA_DIR / RMT_CONFIG_FILE still wins if both are set since config
+# prefers explicit env.
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--data-dir" and _i + 1 < len(sys.argv):
+        os.environ.setdefault("RMT_DATA_DIR", sys.argv[_i + 1])
+    elif _arg.startswith("--data-dir="):
+        os.environ.setdefault("RMT_DATA_DIR", _arg.split("=", 1)[1])
+    elif _arg == "--config" and _i + 1 < len(sys.argv):
+        os.environ.setdefault("RMT_CONFIG_FILE", sys.argv[_i + 1])
+    elif _arg.startswith("--config="):
+        os.environ.setdefault("RMT_CONFIG_FILE", _arg.split("=", 1)[1])
 
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Query, Request, Response
@@ -28,6 +44,7 @@ import database
 import rd_api
 import scrapers
 import torrentio
+from paths import resource_path
 from downloader import manager, sanitize_filename, delete_local_artifacts
 
 # --- WebSocket & Update Logic ---
@@ -115,7 +132,7 @@ async def send_task_update(task: models.DownloadTask):
 # Set the callback in manager
 manager.update_callback = send_task_update
 
-STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", "./storage.json")
+STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", str(config.DATA_DIR / "storage.json"))
 
 def _load_storage_cache() -> Dict:
     try:
@@ -300,11 +317,17 @@ def volume_mountpoints() -> List[str]:
 
 class SettingsUpdate(BaseModel):
     rd_api_key: Optional[str] = Field(default=None, max_length=256)
+    app_password: Optional[str] = Field(default=None, max_length=256)
     download_folder: Optional[str] = Field(default=None, max_length=1024)
     max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
     webhook_url: Optional[str] = Field(default=None, max_length=2048)
     webhook_token: Optional[str] = Field(default=None, max_length=512)
     webhook_events: Optional[List[str]] = Field(default=None, max_length=len(config.WEBHOOK_EVENT_NAMES))
+    prowlarr_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_api_key: Optional[str] = Field(default=None, max_length=256)
+    prowlarr_result_limit: Optional[int] = Field(default=None, ge=1, le=500)
+    torrentio_url: Optional[str] = Field(default=None, max_length=2048)
+    torrentio_filter: Optional[str] = Field(default=None, max_length=2048)
 
 
 class LoginRequest(BaseModel):
@@ -323,6 +346,48 @@ AUTH_COOKIE = "rmt_session"
 SESSION_TTL = 60 * 60 * 24 * 30
 sessions: Dict[str, float] = {}
 
+
+def _sessions_file() -> Path:
+    return config.DATA_DIR / "sessions.json"
+
+
+def _load_sessions() -> None:
+    try:
+        with open(_sessions_file(), encoding="utf-8") as file:
+            data = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    now = time.time()
+    if isinstance(data, dict):
+        for token, expiry in data.items():
+            try:
+                if float(expiry) > now:
+                    sessions[str(token)] = float(expiry)
+            except (TypeError, ValueError):
+                continue
+
+
+def _save_sessions() -> None:
+    try:
+        path = _sessions_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        live = {token: expiry for token, expiry in sessions.items() if expiry > now}
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(live, file, indent=2)
+    except OSError:
+        logging.warning("Could not persist sessions")
+
+
+def _api_keys() -> List[str]:
+    keys = []
+    if config.API_KEY:
+        keys.append(config.API_KEY)
+    extra = os.getenv("RMT_API_TOKENS", "")
+    keys.extend(k.strip() for k in extra.split(",") if k.strip())
+    return keys
+
+
 # --- Auth Dependency ---
 async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(None)):
     """Authenticate browser sessions, while retaining legacy API-key clients."""
@@ -334,7 +399,8 @@ async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(Non
         return
     if session:
         sessions.pop(session, None)
-    if config.API_KEY and x_api_key == config.API_KEY:
+        _save_sessions()
+    if x_api_key and x_api_key in _api_keys():
         return
     raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -343,6 +409,7 @@ async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(Non
 async def lifespan(app: FastAPI):
     # Init DB
     database.create_db_and_tables()
+    _load_sessions()
 
     # Init HTTPX client for RD API
     rd_api.http_client = httpx.AsyncClient(follow_redirects=True, timeout=rd_api.HTTPX_TIMEOUT)
@@ -388,13 +455,16 @@ async def lifespan(app: FastAPI):
         await rd_api.http_client.aclose()
 
 app = FastAPI(title="Real-Debrid Downloader", lifespan=lifespan)
-app.mount("/_app", StaticFiles(directory="static/_app"), name="svelte-app")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+_STATIC_DIR = resource_path("static")
+if _STATIC_DIR.is_dir():
+    if (_STATIC_DIR / "_app").is_dir():
+        app.mount("/_app", StaticFiles(directory=str(_STATIC_DIR / "_app")), name="svelte-app")
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 # --- Routes ---
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    return FileResponse("static/index.html")
+    return FileResponse(str(_STATIC_DIR / "index.html"))
 
 
 @app.post("/api/auth/login")
@@ -405,6 +475,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         raise HTTPException(status_code=401, detail="Invalid password")
     token = secrets.token_urlsafe(32)
     sessions[token] = time.time() + SESSION_TTL
+    _save_sessions()
     response.set_cookie(AUTH_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", secure=request.url.scheme == "https")
     return {"authenticated": True, "auth_configured": True}
 
@@ -412,6 +483,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 @app.post("/api/auth/logout")
 async def logout(request: Request, response: Response):
     sessions.pop(request.cookies.get(AUTH_COOKIE), None)
+    _save_sessions()
     response.delete_cookie(AUTH_COOKIE)
     return {"authenticated": False}
 
@@ -429,10 +501,271 @@ async def auth_session(request: Request):
 async def health():
     try:
         database.get_all_tasks()
-        disk = shutil.disk_usage(config.DOWNLOAD_FOLDER)
+        disk = shutil.disk_usage(os.path.expanduser(config.DOWNLOAD_FOLDER))
         return {"status": "ok", "database": "ok", "download_folder": "ok", "free_bytes": disk.free}
     except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/ready")
+async def ready():
+    """Readiness for load balancers / autostart: DB readable + folder writable."""
+    try:
+        database.get_all_tasks()
+        folder = os.path.expanduser(config.DOWNLOAD_FOLDER)
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, ".writetest")
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        os.remove(probe)
+        disk = shutil.disk_usage(folder)
+        return {"status": "ready", "free_bytes": disk.free, "version": config.APP_VERSION}
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/metrics")
+async def metrics():
+    """Minimal Prometheus exposition (no auth: safe counters only, no filenames)."""
+    tasks = database.get_all_tasks()
+    by_status: Dict[str, int] = {}
+    for task in tasks:
+        by_status[task.status] = by_status.get(task.status, 0) + 1
+    try:
+        free_bytes = shutil.disk_usage(os.path.expanduser(config.DOWNLOAD_FOLDER)).free
+    except OSError:
+        free_bytes = -1
+    lines = [
+        "# HELP rmt_downloads_total Downloads by status.",
+        "# TYPE rmt_downloads_total gauge",
+    ]
+    for status_name in sorted(by_status):
+        lines.append(f'rmt_downloads_total{{status="{status_name}"}} {by_status[status_name]}')
+    lines += [
+        "# HELP rmt_download_folder_free_bytes Free bytes in download folder.",
+        "# TYPE rmt_download_folder_free_bytes gauge",
+        f"rmt_download_folder_free_bytes {free_bytes}",
+        "# HELP rmt_version_info App version (value always 1).",
+        "# TYPE rmt_version_info gauge",
+        f'rmt_version_info{{version="{config.APP_VERSION}"}} 1',
+    ]
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
+class TestWebhookRequest(BaseModel):
+    url: Optional[str] = Field(default=None, max_length=2048)
+
+
+async def _deliver_test_webhook(url: str) -> None:
+    """POST a canned completed-download payload, raising HTTPException on failure."""
+    import httpx as _httpx
+
+    url = (url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Enter a webhook URL first")
+    if not re.match(r"^https?://.+", url, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Webhook URL must use HTTP or HTTPS")
+    body = {
+        "event": "download.completed",
+        "download_id": "test",
+        "name": "webhook-test.zip",
+        "status": None,
+        "progress": None,
+        "size_mb": 1.0,
+        "output_path": os.path.join(os.path.expanduser(config.DOWNLOAD_FOLDER), "webhook-test.zip"),
+    }
+    headers = {"Content-Type": "application/json"}
+    if config.WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {config.WEBHOOK_TOKEN}"
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=body, headers=headers)
+            response.raise_for_status()
+    except _httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Webhook test failed: {exc}") from exc
+
+
+async def _validate_setup_webhook_destination(url: str) -> None:
+    """Reject setup-time webhook targets that resolve to local networks."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Webhook URL must include a hostname")
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Webhook URL has an invalid port") from exc
+
+    def is_public(address: str) -> bool:
+        ip = ipaddress.ip_address(address)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
+
+    try:
+        direct_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        direct_ip = None
+    if direct_ip is not None:
+        if not is_public(str(direct_ip)):
+            raise HTTPException(status_code=400, detail="Webhook URL must target a public host")
+        return
+
+    try:
+        addresses = await asyncio.to_thread(
+            socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM
+        )
+    except socket.gaierror:
+        # Let the HTTP request return the useful connection error for names that
+        # are not resolvable in the server's current DNS environment.
+        return
+    if not addresses or any(not is_public(item[4][0]) for item in addresses):
+        raise HTTPException(status_code=400, detail="Webhook URL must target a public host")
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)):
+    """Send a test `download.completed`-shaped payload without starting a download."""
+    url = (payload.url or config.WEBHOOK_URL or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    await _deliver_test_webhook(url)
+    return {"success": True}
+
+
+class RdKeyCheck(BaseModel):
+    rd_api_key: str = ""
+
+
+@app.post("/api/setup/check-rd")
+async def setup_check_rd(payload: RdKeyCheck):
+    """Validate a Real-Debrid key during first-run setup without saving it."""
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    result = await rd_api.validate_token(payload.rd_api_key.strip())
+    if "error" in result:
+        status_code = 401 if result.get("status_code") == 401 else 502
+        raise HTTPException(status_code=status_code, detail=str(result["error"]))
+    return {
+        "username": result.get("username"),
+        "type": result.get("type"),
+        "expiration": result.get("expiration"),
+        "points": result.get("points"),
+    }
+
+
+@app.post("/api/setup/test-webhook")
+async def setup_test_webhook(payload: TestWebhookRequest):
+    """Try a webhook URL during first-run setup without saving it."""
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    url = (payload.url or "").strip()
+    await _validate_setup_webhook_destination(url)
+    await _deliver_test_webhook(url)
+    return {"success": True}
+
+
+class BulkAction(BaseModel):
+    action: str = Field(pattern=r"^(pause|resume|cancel|retry)$")
+    ids: Optional[List[str]] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/downloads/bulk-action")
+async def bulk_action(payload: BulkAction, auth=Depends(verify_api_key)):
+    """Pause / resume / cancel / retry many downloads at once (ids omitted = all active)."""
+    tasks = database.get_all_tasks()
+    if payload.ids:
+        wanted = set(payload.ids)
+        tasks = [t for t in tasks if t.id in wanted]
+    elif payload.action in ("pause", "cancel"):
+        active = {"pending", "starting", "unrestricting", "downloading", "processing_torrent",
+                  "waiting_rd", "rd_downloading", "selecting_files", "paused"}
+        tasks = [t for t in tasks if t.status in active and (payload.action != "pause" or t.status != "paused")]
+    elif payload.action in ("resume", "retry"):
+        tasks = [t for t in tasks if t.status in ("paused", "failed", "rd_error", "cancelled")]
+    handled = 0
+    for task in tasks:
+        if not manager.get_task(task.id):
+            manager.tasks[task.id] = task
+            manager.runtime_states[task.id] = models.RuntimeState()
+        try:
+            if payload.action == "pause":
+                await manager.pause_task(task.id)
+            elif payload.action == "resume":
+                await manager.resume_task(task.id)
+            elif payload.action == "cancel":
+                await manager.cancel_task(task.id)
+            elif payload.action == "retry":
+                # Retry reuses resume path for terminal states.
+                await manager.resume_task(task.id)
+            handled += 1
+        except Exception:
+            logging.exception("Bulk %s failed for %s", payload.action, task.id)
+    await broadcast_state_update()
+    return {"action": payload.action, "handled": handled}
+
+
+@app.delete("/api/downloads/completed")
+async def bulk_clear_completed(auth=Depends(verify_api_key)):
+    """Remove all completed/failed/cancelled rows (local files kept)."""
+    removed = 0
+    for task in database.get_all_tasks():
+        if task.status in ("completed", "added_to_rd", "failed", "rd_error", "cancelled"):
+            await manager.cancel_task(task.id)
+            if database.delete_task_db(task.id):
+                manager.tasks.pop(task.id, None)
+                manager.runtime_states.pop(task.id, None)
+                removed += 1
+    await broadcast_state_update()
+    return {"removed": removed}
+
+
+@app.get("/api/version")
+async def version():
+    return {"version": config.APP_VERSION, "data_dir": str(config.DATA_DIR)}
+
+
+class SetupRequest(BaseModel):
+    rd_api_key: str = Field(min_length=1, max_length=256)
+    download_folder: Optional[str] = Field(default=None, max_length=1024)
+    max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
+    app_password: Optional[str] = Field(default=None, max_length=256)
+    webhook_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_api_key: Optional[str] = Field(default=None, max_length=256)
+    torrentio_url: Optional[str] = Field(default=None, max_length=2048)
+    torrentio_filter: Optional[str] = Field(default=None, max_length=2048)
+
+
+@app.get("/api/setup/status")
+async def setup_status():
+    return {
+        "setup_required": not config.is_configured(),
+        "default_download_folder": config.DOWNLOAD_FOLDER,
+        "default_max_concurrent_downloads": config.MAX_CONCURRENT_DOWNLOADS,
+        "version": config.APP_VERSION,
+    }
+
+
+@app.post("/api/setup")
+async def setup(payload: SetupRequest):
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    try:
+        result = config.update_settings(
+            rd_api_key=payload.rd_api_key.strip(),
+            download_folder=payload.download_folder,
+            max_concurrent_downloads=payload.max_concurrent_downloads,
+            app_password=payload.app_password,
+            webhook_url=payload.webhook_url,
+            prowlarr_url=payload.prowlarr_url,
+            prowlarr_api_key=payload.prowlarr_api_key,
+            torrentio_url=payload.torrentio_url,
+            torrentio_filter=payload.torrentio_filter,
+        )
+        return result
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @app.get("/api/status")
 async def status(auth=Depends(verify_api_key)):
@@ -453,7 +786,16 @@ async def get_settings(auth=Depends(verify_api_key)):
     return config.public_settings()
 
 
+def _require_rd_configured():
+    if not config.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Real-Debrid API key not configured. Complete setup via POST /api/setup or the Settings panel.",
+        )
+
+
 async def _enqueue_magnet(link: str, download_to_server: bool):
+    _require_rd_configured()
     task_id = str(uuid.uuid4())
     task = models.DownloadTask(
         id=task_id,
@@ -751,11 +1093,17 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
     try:
         result = config.update_settings(
             rd_api_key=settings.rd_api_key,
+            app_password=settings.app_password,
             download_folder=settings.download_folder,
             max_concurrent_downloads=settings.max_concurrent_downloads,
             webhook_url=settings.webhook_url,
             webhook_token=settings.webhook_token,
             webhook_events=settings.webhook_events,
+            prowlarr_url=settings.prowlarr_url,
+            prowlarr_api_key=settings.prowlarr_api_key,
+            prowlarr_result_limit=settings.prowlarr_result_limit,
+            torrentio_url=settings.torrentio_url,
+            torrentio_filter=settings.torrentio_filter,
         )
         if settings.max_concurrent_downloads is not None:
             manager.update_concurrency(result["max_concurrent_downloads"])
@@ -765,6 +1113,7 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
 
 @app.post("/api/download", status_code=202)
 async def add_new_download(link: str = Form(...), auth=Depends(verify_api_key)):
+    _require_rd_configured()
     link = link.strip()
     if not link:
         raise HTTPException(status_code=400, detail="Link cannot be empty")
@@ -899,7 +1248,7 @@ async def delete_download(download_id: str, delete_local: bool = False, auth=Dep
 async def websocket_endpoint(websocket: WebSocket):
     session = websocket.cookies.get(AUTH_COOKIE)
     session_valid = bool(session and sessions.get(session, 0) > time.time())
-    legacy_valid = bool(config.API_KEY and websocket.headers.get("x-api-key") == config.API_KEY)
+    legacy_valid = bool(websocket.headers.get("x-api-key") in _api_keys())
     if config.APP_PASSWORD and not (session_valid or legacy_valid):
         await websocket.close(code=1008, reason="Authentication required")
         return
@@ -931,8 +1280,37 @@ async def websocket_endpoint(websocket: WebSocket):
 async def spa_fallback(full_path: str):
     if full_path.startswith(("api/", "ws", "_app/", "static/")):
         raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse("static/index.html")
+    return FileResponse(str(_STATIC_DIR / "index.html"))
+
+def _parse_cli_args(argv: Optional[List[str]] = None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="RMT-Debrid headless server")
+    parser.add_argument("--host", default=config.SERVER_HOST)
+    parser.add_argument("--port", type=int, default=config.SERVER_PORT)
+    parser.add_argument("--data-dir", default=str(config.DATA_DIR))
+    parser.add_argument("--config", default=str(config._CONFIG_PATH))
+    parser.add_argument("--reload", action="store_true", default=config.RELOAD)
+    return parser.parse_args(argv)
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=config.SERVER_HOST, port=config.SERVER_PORT, reload=config.RELOAD)
+
+    _args = _parse_cli_args()
+    # DATA_DIR was already resolved at import (with --data-dir pre-parsed above),
+    # so just log it here. RMT_DATA_DIR env wins if both are set.
+    # File logging for headless/exe runs (alongside console).
+    try:
+        _handler = logging.FileHandler(str(config.DATA_DIR / "rmt-debrid.log"))
+        _handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"))
+        logging.getLogger().addHandler(_handler)
+    except OSError:
+        logging.warning("Could not attach file log handler")
+    logging.info("Starting RMT-Debrid v%s (data_dir=%s)", config.APP_VERSION, config.DATA_DIR)
+    if getattr(sys, "frozen", False):
+        # Frozen (PyInstaller): no importable "main" module on sys.path, so
+        # pass the app object directly. Reload is meaningless in a bundle.
+        uvicorn.run(app, host=_args.host, port=_args.port, reload=False)
+    else:
+        uvicorn.run("main:app", host=_args.host, port=_args.port, reload=_args.reload)

@@ -930,9 +930,6 @@
 			<div class="px-5 pt-5 pr-12 pb-4">
 				<Dialog.Header>
 					<Dialog.Title>Stream file</Dialog.Title>
-					<Dialog.Description>
-						{activeStreamFile?.path ?? activeStreamTorrent?.filename ?? 'Choose a version to play'}
-					</Dialog.Description>
 				</Dialog.Header>
 			</div>
 			<div class="max-h-[60vh] space-y-4 overflow-y-auto px-5 pb-5">
@@ -1001,10 +998,6 @@
 			<div class="px-5 pt-5 pr-12 pb-4">
 				<Dialog.Header>
 					<Dialog.Title>Delete from Real-Debrid?</Dialog.Title>
-					<Dialog.Description>
-						{pendingDeleteRd?.filename ?? 'This torrent'} will be permanently removed from your Real-Debrid
-						account.
-					</Dialog.Description>
 				</Dialog.Header>
 			</div>
 			<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
