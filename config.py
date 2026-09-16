@@ -77,6 +77,12 @@ _CANONICAL_KEYS = {
     "webhook_url": ("WEBHOOK_URL",),
     "webhook_token": ("WEBHOOK_TOKEN",),
     "webhook_events": ("WEBHOOK_EVENTS",),
+    "app_password": ("APP_PASSWORD",),
+    "prowlarr_url": ("PROWLARR_URL",),
+    "prowlarr_api_key": ("PROWLARR_API_KEY",),
+    "prowlarr_result_limit": ("PROWLARR_RESULT_LIMIT",),
+    "torrentio_url": ("TORRENTIO_URL",),
+    "torrentio_filter": ("TORRENTIO_FILTER",),
 }
 
 _LEGACY_FILENAMES = ("settings.json",)
@@ -247,16 +253,20 @@ MAX_MBPS = float(os.getenv("MAX_MBPS", "0") or 0)  # 0 = unlimited global local-
 MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)))  # pause/fail below 1 GiB free
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 APP_VERSION = os.getenv("RMT_VERSION", os.getenv("APP_VERSION", "dev"))
-TORRENTIO_URL = os.getenv("TORRENTIO_URL", "https://torrentio.strem.fun")
-TORRENTIO_FILTER = os.getenv("TORRENTIO_FILTER", "")
-PROWLARR_URL = os.getenv("PROWLARR_URL", "")
-PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
-PROWLARR_RESULT_LIMIT = int(os.getenv("PROWLARR_RESULT_LIMIT", "20"))
+TORRENTIO_URL = _setting("torrentio_url", "https://torrentio.strem.fun")
+TORRENTIO_FILTER = _setting("torrentio_filter", "")
+PROWLARR_URL = _setting("prowlarr_url", "")
+PROWLARR_API_KEY = _setting("prowlarr_api_key", "")
+try:
+    PROWLARR_RESULT_LIMIT = int(_setting("prowlarr_result_limit", "20") or 20)
+except (TypeError, ValueError):
+    PROWLARR_RESULT_LIMIT = 20
 
 # Basic Auth (Optional but recommended)
 API_KEY = os.getenv("API_KEY") # Legacy header secret
-# Shared household password. API_KEY remains a backwards-compatible fallback.
-APP_PASSWORD = os.getenv("APP_PASSWORD") or API_KEY
+# Shared household password: env wins, then config file, then legacy API_KEY.
+# The setup wizard can set it; it applies live without a restart.
+APP_PASSWORD = _setting("app_password") or API_KEY
 
 # First-run mode: allow boot without an RD key so the setup wizard can save one.
 # Previously this raised ValueError at import, which breaks frozen executables.
@@ -275,6 +285,7 @@ def is_configured() -> bool:
 def public_settings():
     """Return settings safe to send to the browser."""
     token = RD_API_KEY or ""
+    prowlarr_token = PROWLARR_API_KEY or ""
     return {
         "rd_api_key_set": bool(token),
         "rd_api_key_hint": f"{'•' * max(0, len(token) - 4)}{token[-4:]}" if token else "",
@@ -284,8 +295,14 @@ def public_settings():
         "webhook_token_set": bool(WEBHOOK_TOKEN),
         "webhook_events": WEBHOOK_EVENTS,
         "auth_configured": bool(APP_PASSWORD),
+        "app_password_set": bool(_saved.get("app_password")),
         "torrentio_configured": bool(TORRENTIO_URL),
+        "torrentio_url": TORRENTIO_URL,
+        "torrentio_filter": TORRENTIO_FILTER,
         "prowlarr_configured": bool(PROWLARR_URL),
+        "prowlarr_url": PROWLARR_URL,
+        "prowlarr_api_key_set": bool(prowlarr_token),
+        "prowlarr_result_limit": PROWLARR_RESULT_LIMIT,
         "data_dir": str(DATA_DIR),
         "config_path": str(_CONFIG_PATH),
         "version": APP_VERSION,
@@ -293,10 +310,21 @@ def public_settings():
         "max_mbps": MAX_MBPS,
     }
 
+
+def _validate_http_url(value: str, label: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label} must use HTTP or HTTPS")
+    return value
+
+
 def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_downloads=None,
-                    webhook_url=None, webhook_token=None, webhook_events=None):
+                    webhook_url=None, webhook_token=None, webhook_events=None,
+                    app_password=None, prowlarr_url=None, prowlarr_api_key=None,
+                    prowlarr_result_limit=None, torrentio_url=None, torrentio_filter=None):
     """Validate and atomically persist mutable settings, updating this module."""
     global RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS, WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS
+    global APP_PASSWORD, PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_RESULT_LIMIT, TORRENTIO_URL, TORRENTIO_FILTER
     new_token = RD_API_KEY if rd_api_key is None or not rd_api_key.strip() else rd_api_key.strip()
     new_folder = DOWNLOAD_FOLDER if download_folder is None else download_folder.strip()
     if not new_token:
@@ -307,11 +335,24 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     if not 1 <= concurrency <= 20:
         raise ValueError("Concurrent downloads must be between 1 and 20")
     new_webhook_url = WEBHOOK_URL if webhook_url is None else webhook_url.strip()
-    parsed_webhook_url = urlparse(new_webhook_url)
-    if new_webhook_url and (parsed_webhook_url.scheme not in {"http", "https"} or not parsed_webhook_url.netloc):
-        raise ValueError("Webhook URL must use HTTP or HTTPS")
+    if new_webhook_url:
+        _validate_http_url(new_webhook_url, "Webhook URL")
     new_webhook_token = WEBHOOK_TOKEN if webhook_token is None else webhook_token.strip()
     new_webhook_events = WEBHOOK_EVENTS if webhook_events is None else _webhook_events(webhook_events)
+    new_password = _saved.get("app_password", "")
+    if app_password is not None and app_password.strip():
+        new_password = app_password.strip()
+    new_prowlarr_url = PROWLARR_URL if prowlarr_url is None else prowlarr_url.strip()
+    if new_prowlarr_url:
+        _validate_http_url(new_prowlarr_url, "Prowlarr URL")
+    new_prowlarr_key = PROWLARR_API_KEY if prowlarr_api_key is None else prowlarr_api_key.strip()
+    new_prowlarr_limit = PROWLARR_RESULT_LIMIT if prowlarr_result_limit is None else int(prowlarr_result_limit)
+    if not 1 <= new_prowlarr_limit <= 500:
+        raise ValueError("Prowlarr result limit must be between 1 and 500")
+    new_torrentio_url = TORRENTIO_URL if torrentio_url is None else torrentio_url.strip()
+    if new_torrentio_url:
+        _validate_http_url(new_torrentio_url, "Torrentio URL")
+    new_torrentio_filter = TORRENTIO_FILTER if torrentio_filter is None else torrentio_filter.strip()
     Path(new_folder).expanduser().mkdir(parents=True, exist_ok=True)
     if _USE_JSON:
         # Legacy explicit JSON path: preserve the historic UPPER_CASE schema.
@@ -321,12 +362,18 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     else:
         values = {"rd_api_key": new_token, "download_folder": new_folder, "max_concurrent": concurrency,
                   "webhook_url": new_webhook_url, "webhook_token": new_webhook_token,
-                  "webhook_events": list(new_webhook_events)}
+                  "webhook_events": list(new_webhook_events),
+                  "app_password": new_password, "prowlarr_url": new_prowlarr_url,
+                  "prowlarr_api_key": new_prowlarr_key, "prowlarr_result_limit": new_prowlarr_limit,
+                  "torrentio_url": new_torrentio_url, "torrentio_filter": new_torrentio_filter}
     _write_config_file(values)
     _saved.clear()
     _saved.update(_normalize_keys(values))
     RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS = new_token, str(Path(new_folder).expanduser()), concurrency
     WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS = new_webhook_url, new_webhook_token, new_webhook_events
+    APP_PASSWORD = _setting("app_password") or API_KEY
+    PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_RESULT_LIMIT = new_prowlarr_url, new_prowlarr_key, new_prowlarr_limit
+    TORRENTIO_URL, TORRENTIO_FILTER = new_torrentio_url, new_torrentio_filter
     return public_settings()
 
 # Setup basic logging

@@ -69,9 +69,14 @@ class TomlConfigTests(unittest.TestCase):
              patch.object(config_module, "_USE_JSON", False):
             result = config_module.update_settings(
                 rd_api_key="toml-test-key", download_folder=str(downloads),
-                max_concurrent_downloads=4,
+                max_concurrent_downloads=4, app_password="household",
+                prowlarr_url="http://prowlarr:9696", prowlarr_api_key="prowlarr-secret",
+                torrentio_url="https://torrentio.strem.fun",
             )
         self.assertTrue(result["rd_api_key_set"])
+        self.assertTrue(result["auth_configured"])
+        self.assertEqual(result["prowlarr_url"], "http://prowlarr:9696")
+        self.assertTrue(result["prowlarr_api_key_set"])
         import tomli
 
         with open(tmp / "config.toml", "rb") as handle:
@@ -79,6 +84,58 @@ class TomlConfigTests(unittest.TestCase):
         self.assertEqual(stored["rd_api_key"], "toml-test-key")
         self.assertEqual(stored["max_concurrent"], 4)
         self.assertIsInstance(stored["webhook_events"], list)
+        self.assertEqual(stored["app_password"], "household")
+        self.assertEqual(stored["prowlarr_api_key"], "prowlarr-secret")
+
+    def test_update_settings_rejects_bad_prowlarr_url(self):
+        tmp = Path(tempfile.mkdtemp(prefix="rmt-toml-"))
+        with patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"), \
+             patch.object(config_module, "_USE_JSON", False):
+            with self.assertRaises(ValueError):
+                config_module.update_settings(
+                    rd_api_key="toml-test-key",
+                    download_folder=str(tmp / "downloads"),
+                    prowlarr_url="not-a-url",
+                )
+
+
+class SetupEndpointTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._globals = {
+            name: getattr(config_module, name)
+            for name in (
+                "RD_API_KEY", "DOWNLOAD_FOLDER", "MAX_CONCURRENT_DOWNLOADS",
+                "WEBHOOK_URL", "WEBHOOK_TOKEN", "WEBHOOK_EVENTS", "APP_PASSWORD",
+                "PROWLARR_URL", "PROWLARR_API_KEY", "PROWLARR_RESULT_LIMIT",
+                "TORRENTIO_URL", "TORRENTIO_FILTER",
+                "_CONFIG_PATH", "_USE_JSON",
+            )
+        }
+        self._saved = dict(config_module._saved)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for name, value in self._globals.items():
+            setattr(config_module, name, value)
+        config_module._saved.clear()
+        config_module._saved.update(self._saved)
+
+    async def test_setup_persists_full_payload(self):
+        import main
+
+        tmp = Path(tempfile.mkdtemp(prefix="rmt-setup-"))
+        with patch.object(config_module, "RD_API_KEY", ""), \
+             patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"), \
+             patch.object(config_module, "_USE_JSON", False):
+            out = await main.setup(main.SetupRequest(
+                rd_api_key="setup-key", app_password="household",
+                prowlarr_url="http://prowlarr:9696",
+                download_folder=str(tmp / "downloads"),
+            ))
+        self.assertFalse(out["setup_required"])
+        self.assertTrue(out["auth_configured"])
+        self.assertEqual(config_module.APP_PASSWORD, "household")
+        self.assertEqual(config_module.PROWLARR_URL, "http://prowlarr:9696")
 
 
 if __name__ == "__main__":

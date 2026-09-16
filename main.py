@@ -320,6 +320,11 @@ class SettingsUpdate(BaseModel):
     webhook_url: Optional[str] = Field(default=None, max_length=2048)
     webhook_token: Optional[str] = Field(default=None, max_length=512)
     webhook_events: Optional[List[str]] = Field(default=None, max_length=len(config.WEBHOOK_EVENT_NAMES))
+    prowlarr_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_api_key: Optional[str] = Field(default=None, max_length=256)
+    prowlarr_result_limit: Optional[int] = Field(default=None, ge=1, le=500)
+    torrentio_url: Optional[str] = Field(default=None, max_length=2048)
+    torrentio_filter: Optional[str] = Field(default=None, max_length=2048)
 
 
 class LoginRequest(BaseModel):
@@ -640,6 +645,13 @@ async def version():
 class SetupRequest(BaseModel):
     rd_api_key: str = Field(min_length=1, max_length=256)
     download_folder: Optional[str] = Field(default=None, max_length=1024)
+    max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
+    app_password: Optional[str] = Field(default=None, max_length=256)
+    webhook_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_url: Optional[str] = Field(default=None, max_length=2048)
+    prowlarr_api_key: Optional[str] = Field(default=None, max_length=256)
+    torrentio_url: Optional[str] = Field(default=None, max_length=2048)
+    torrentio_filter: Optional[str] = Field(default=None, max_length=2048)
 
 
 @app.get("/api/setup/status")
@@ -655,6 +667,13 @@ async def setup(payload: SetupRequest):
         result = config.update_settings(
             rd_api_key=payload.rd_api_key.strip(),
             download_folder=payload.download_folder,
+            max_concurrent_downloads=payload.max_concurrent_downloads,
+            app_password=payload.app_password,
+            webhook_url=payload.webhook_url,
+            prowlarr_url=payload.prowlarr_url,
+            prowlarr_api_key=payload.prowlarr_api_key,
+            torrentio_url=payload.torrentio_url,
+            torrentio_filter=payload.torrentio_filter,
         )
         return result
     except (ValueError, OSError) as exc:
@@ -991,6 +1010,11 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
             webhook_url=settings.webhook_url,
             webhook_token=settings.webhook_token,
             webhook_events=settings.webhook_events,
+            prowlarr_url=settings.prowlarr_url,
+            prowlarr_api_key=settings.prowlarr_api_key,
+            prowlarr_result_limit=settings.prowlarr_result_limit,
+            torrentio_url=settings.torrentio_url,
+            torrentio_filter=settings.torrentio_filter,
         )
         if settings.max_concurrent_downloads is not None:
             manager.update_concurrency(result["max_concurrent_downloads"])

@@ -17,6 +17,20 @@ rd_api_key = ""
 # Local downloads running at once (1-20).
 max_concurrent = 3
 
+# Optional household password for the web UI. Prefer APP_PASSWORD env in
+# shared environments; the setup wizard can set this instead.
+# app_password = ""
+
+# Optional Prowlarr discovery configuration.
+# prowlarr_url = "http://localhost:9696"
+# prowlarr_api_key = ""
+# prowlarr_result_limit = 20
+
+# Optional Torrentio discovery configuration.
+# torrentio_url = "https://torrentio.strem.fun"
+# Example: sort=qualitysize|qualityfilter=threed,other,scr,cam,unknown|realdebrid=YOUR_RD_KEY
+# torrentio_filter = ""
+
 # Optional webhook notifications.
 # webhook_url = "https://ntfy.example.com/downloads"
 # webhook_token = ""

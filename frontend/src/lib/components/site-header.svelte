@@ -45,6 +45,11 @@
 		webhook_token_set: boolean;
 		webhook_events: string[];
 		config_path?: string;
+		prowlarr_url: string;
+		prowlarr_api_key_set: boolean;
+		prowlarr_result_limit: number;
+		torrentio_url: string;
+		torrentio_filter: string;
 	};
 
 	type StorageData = {
@@ -79,11 +84,17 @@
 		rd_api_key_hint: '',
 		webhook_url: '',
 		webhook_token_set: false,
-		webhook_events: ['download.completed']
+		webhook_events: ['download.completed'],
+		prowlarr_url: '',
+		prowlarr_api_key_set: false,
+		prowlarr_result_limit: 20,
+		torrentio_url: '',
+		torrentio_filter: ''
 	});
 
 	let apiKey = $state('');
 	let webhookToken = $state('');
+	let prowlarrApiKey = $state('');
 	const webhookEventOptions = [
 		['download.started', 'Download started'],
 		['download.paused', 'Download paused'],
@@ -113,14 +124,19 @@
 			download_folder: value.download_folder,
 			max_concurrent_downloads: Number(value.max_concurrent_downloads),
 			webhook_url: value.webhook_url,
-			webhook_events: [...value.webhook_events].sort()
+			webhook_events: [...value.webhook_events].sort(),
+			prowlarr_url: value.prowlarr_url,
+			prowlarr_result_limit: Number(value.prowlarr_result_limit),
+			torrentio_url: value.torrentio_url,
+			torrentio_filter: value.torrentio_filter
 		});
 	}
 
 	const settingsDirty = $derived(
 		(settingsSnapshot !== '' && settingsSnapshot !== settingsFingerprint()) ||
 			!!apiKey ||
-			!!webhookToken
+			!!webhookToken ||
+			!!prowlarrApiKey
 	);
 
 	function date(value?: string) {
@@ -196,6 +212,7 @@
 	function openDetails() {
 		apiKey = '';
 		webhookToken = '';
+		prowlarrApiKey = '';
 		settingsMessage = null;
 		detailsDialogOpen = true;
 		void fetchSettings();
@@ -218,6 +235,7 @@
 			settings = { ...settingsBaseline, webhook_events: [...settingsBaseline.webhook_events] };
 		apiKey = '';
 		webhookToken = '';
+		prowlarrApiKey = '';
 		settingsMessage = null;
 		discardSettingsDialogOpen = false;
 		detailsDialogOpen = false;
@@ -237,7 +255,12 @@
 					max_concurrent_downloads: Number(settings.max_concurrent_downloads),
 					webhook_url: settings.webhook_url,
 					webhook_token: webhookToken || null,
-					webhook_events: settings.webhook_events
+					webhook_events: settings.webhook_events,
+					prowlarr_url: settings.prowlarr_url,
+					prowlarr_api_key: prowlarrApiKey || null,
+					prowlarr_result_limit: Number(settings.prowlarr_result_limit) || null,
+					torrentio_url: settings.torrentio_url,
+					torrentio_filter: settings.torrentio_filter
 				})
 			});
 			settings = data;
@@ -248,6 +271,7 @@
 			settingsSnapshot = settingsFingerprint();
 			apiKey = '';
 			webhookToken = '';
+			prowlarrApiKey = '';
 			detailsDialogOpen = false;
 			toast.success('Settings saved.');
 			fetchAccount();
@@ -733,6 +757,83 @@
 								<p class="text-xs leading-4 text-muted-foreground">
 									Leave all unchecked to disable notifications.
 								</p>
+							</fieldset>
+							<fieldset class="grid gap-2">
+								<legend class="pb-2 text-[13px] leading-none font-medium">Discover</legend>
+								<div class="grid gap-5">
+									<div class="grid gap-2">
+										<label for="prowlarr-url" class="text-[13px] leading-none font-medium"
+											>Prowlarr URL</label
+										>
+										<Input
+											id="prowlarr-url"
+											bind:value={settings.prowlarr_url}
+											disabled={saving}
+											type="url"
+											placeholder="http://localhost:9696"
+											autocomplete="off"
+											class="h-8 font-mono text-[13px]"
+										/>
+									</div>
+									<div class="grid gap-2">
+										<label for="prowlarr-key" class="text-[13px] leading-none font-medium"
+											>Prowlarr API key</label
+										>
+										<Input
+											id="prowlarr-key"
+											type="password"
+											bind:value={prowlarrApiKey}
+											disabled={saving}
+											placeholder={settings.prowlarr_api_key_set
+												? 'Leave blank to keep current'
+												: 'Optional'}
+											autocomplete="new-password"
+											class="h-8 font-mono text-[13px]"
+										/>
+									</div>
+									<div class="grid gap-2">
+										<label for="prowlarr-limit" class="text-[13px] leading-none font-medium"
+											>Prowlarr result limit</label
+										>
+										<Input
+											id="prowlarr-limit"
+											type="number"
+											min="1"
+											max="500"
+											inputmode="numeric"
+											bind:value={settings.prowlarr_result_limit}
+											disabled={saving}
+											class="h-8 w-24 tabular-nums"
+										/>
+									</div>
+									<div class="grid gap-2">
+										<label for="torrentio-url" class="text-[13px] leading-none font-medium"
+											>Torrentio URL</label
+										>
+										<Input
+											id="torrentio-url"
+											bind:value={settings.torrentio_url}
+											disabled={saving}
+											type="url"
+											placeholder="https://torrentio.strem.fun"
+											autocomplete="off"
+											class="h-8 font-mono text-[13px]"
+										/>
+									</div>
+									<div class="grid gap-2">
+										<label for="torrentio-filter" class="text-[13px] leading-none font-medium"
+											>Torrentio filter</label
+										>
+										<Input
+											id="torrentio-filter"
+											bind:value={settings.torrentio_filter}
+											disabled={saving}
+											placeholder="sort=qualitysize|…"
+											autocomplete="off"
+											class="h-8 font-mono text-[13px]"
+										/>
+									</div>
+								</div>
 							</fieldset>
 						</div>
 					</form>
