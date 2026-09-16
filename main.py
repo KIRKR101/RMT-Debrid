@@ -8,6 +8,8 @@ from ctypes import wintypes
 import json
 import os
 import re
+import ipaddress
+import socket
 import shutil
 import subprocess
 import sys
@@ -580,7 +582,45 @@ async def _deliver_test_webhook(url: str) -> None:
             response = await client.post(url, json=body, headers=headers)
             response.raise_for_status()
     except _httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Webhook test failed: {exc}") from exc
+            raise HTTPException(status_code=502, detail=f"Webhook test failed: {exc}") from exc
+
+
+async def _validate_setup_webhook_destination(url: str) -> None:
+    """Reject setup-time webhook targets that resolve to local networks."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Webhook URL must include a hostname")
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Webhook URL has an invalid port") from exc
+
+    def is_public(address: str) -> bool:
+        ip = ipaddress.ip_address(address)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified)
+
+    try:
+        direct_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        direct_ip = None
+    if direct_ip is not None:
+        if not is_public(str(direct_ip)):
+            raise HTTPException(status_code=400, detail="Webhook URL must target a public host")
+        return
+
+    try:
+        addresses = await asyncio.to_thread(
+            socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM
+        )
+    except socket.gaierror:
+        # Let the HTTP request return the useful connection error for names that
+        # are not resolvable in the server's current DNS environment.
+        return
+    if not addresses or any(not is_public(item[4][0]) for item in addresses):
+        raise HTTPException(status_code=400, detail="Webhook URL must target a public host")
 
 
 @app.post("/api/settings/test-webhook")
@@ -619,7 +659,9 @@ async def setup_test_webhook(payload: TestWebhookRequest):
     """Try a webhook URL during first-run setup without saving it."""
     if config.is_configured():
         raise HTTPException(status_code=409, detail="Already configured")
-    await _deliver_test_webhook(payload.url or "")
+    url = (payload.url or "").strip()
+    await _validate_setup_webhook_destination(url)
+    await _deliver_test_webhook(url)
     return {"success": True}
 
 
