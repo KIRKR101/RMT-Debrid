@@ -103,6 +103,11 @@
 	let deleteLocalFiles = $state(false);
 	let copiedLinkId = $state<string | null>(null);
 	let copiedPathId = $state<string | null>(null);
+	let setupRequired = $state(false);
+	let setupKey = $state('');
+	let setupFolder = $state('');
+	let setupError = $state('');
+	let setupSaving = $state(false);
 
 	let socket: WebSocket | null = null;
 	let reconnectAttempts = 0;
@@ -536,7 +541,35 @@
 		pendingCancelId = null;
 	}
 
+	async function submitSetup() {
+		if (!setupKey.trim() || setupSaving) return;
+		setupSaving = true;
+		setupError = '';
+		try {
+			await request('/api/setup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					rd_api_key: setupKey.trim(),
+					download_folder: setupFolder.trim() || undefined
+				})
+			});
+			setupRequired = false;
+			setupKey = '';
+			showSuccess('Setup complete. You can add downloads now.');
+		} catch (error) {
+			setupError = error instanceof Error ? error.message : 'Setup failed';
+		} finally {
+			setupSaving = false;
+		}
+	}
+
 	onMount(() => {
+		request('/api/setup/status')
+			.then((data) => {
+				setupRequired = data.setup_required === true;
+			})
+			.catch(() => {});
 		request('/api/auth/session')
 			.then((data) => {
 				authenticated = data.authenticated;
@@ -566,6 +599,41 @@
 			<SiteHeader onLogout={handleLogout} />
 
 			<div class="page-shell">
+				{#if setupRequired}
+					<div class="console-strip px-3 py-3 sm:px-5 sm:py-4" role="alert">
+						<p class="text-sm font-semibold tracking-tight text-foreground">First-run setup</p>
+						<p class="mt-1 text-[13px] text-muted-foreground">
+						 No Real-Debrid API key is configured. Paste it once — it stays on this machine.
+						</p>
+						<form
+							class="mt-3 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
+							onsubmit={(e) => {
+								e.preventDefault();
+								submitSetup();
+							}}
+						>
+							<Input
+								bind:value={setupKey}
+								type="password"
+								placeholder="Real-Debrid API key"
+								aria-label="Real-Debrid API key"
+								autocomplete="off"
+								class="h-8 flex-1 font-mono text-[13px]"
+							/>
+							<Input
+								bind:value={setupFolder}
+								placeholder="Download folder (optional)"
+								aria-label="Download folder (optional)"
+								autocomplete="off"
+								class="h-8 flex-1 font-mono text-[13px]"
+							/>
+							<Button type="submit" class="h-8 shrink-0 px-4 text-[13px]" disabled={!setupKey.trim() || setupSaving}>
+								{setupSaving ? 'Saving…' : 'Save'}
+							</Button>
+						</form>
+						{#if setupError}<p class="mt-2 text-[13px] text-destructive">{setupError}</p>{/if}
+					</div>
+				{/if}
 				<div class="page-heading">
 					<div>
 						<h1 class="text-[22px] leading-7 font-semibold tracking-tight text-foreground">

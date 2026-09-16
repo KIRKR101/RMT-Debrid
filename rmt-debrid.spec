@@ -1,0 +1,65 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller build for RMT-Debrid (macOS + Linux first, Windows later).
+
+Build the frontend first (``bun run build:frontend`` populates ``static/``),
+then run ``pyinstaller rmt-debrid.spec``. Output is ``dist/rmt-debrid/`` (onedir).
+"""
+import os
+from pathlib import Path
+
+block_cipher = None
+ROOT = Path(os.path.abspath(SPECPATH))  # noqa: F821
+
+a = Analysis(  # noqa: F821
+    ['main.py'],
+    pathex=[str(ROOT)],
+    binaries=[],
+    datas=[
+        (str(ROOT / 'static'), 'static'),
+        (str(ROOT / '.env.sample'), '.'),
+    ],
+    hiddenimports=[
+        'uvicorn.logging',
+        'uvicorn.loops.auto',
+        'uvicorn.protocols.http.auto',
+        'uvicorn.protocols.websockets.auto',
+        'sqlmodel',
+        'sqlite3',
+        'dotenv',
+        'httpx',
+        'aiofiles',
+        'tenacity',
+        'multipart',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)  # noqa: F821
+exe = EXE(  # noqa: F821
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='rmt-debrid',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,  # headless server: keep console for logs
+)
+coll = COLLECT(  # noqa: F821
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='rmt-debrid',
+)

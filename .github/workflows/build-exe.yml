@@ -1,0 +1,50 @@
+name: build-exe
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14 # arm64
+            artifact: rmt-debrid-macos-arm64
+          - os: macos-13 # x64
+            artifact: rmt-debrid-macos-x64
+          - os: ubuntu-22.04
+            artifact: rmt-debrid-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build frontend
+        run: bun install --cwd frontend && bun run --cwd frontend build
+
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build executable (onedir)
+        run: pyinstaller rmt-debrid.spec
+        env:
+          RMT_VERSION: ${{ github.ref_name }}
+
+      - name: Smoke test
+        run: |
+          ./dist/rmt-debrid/rmt-debrid --help || dist/rmt-debrid/rmt-debrid --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/rmt-debrid/

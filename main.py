@@ -324,6 +324,48 @@ AUTH_COOKIE = "rmt_session"
 SESSION_TTL = 60 * 60 * 24 * 30
 sessions: Dict[str, float] = {}
 
+
+def _sessions_file() -> Path:
+    return Path(get_data_dir()) / "sessions.json"
+
+
+def _load_sessions() -> None:
+    try:
+        with open(_sessions_file(), encoding="utf-8") as file:
+            data = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    now = time.time()
+    if isinstance(data, dict):
+        for token, expiry in data.items():
+            try:
+                if float(expiry) > now:
+                    sessions[str(token)] = float(expiry)
+            except (TypeError, ValueError):
+                continue
+
+
+def _save_sessions() -> None:
+    try:
+        path = _sessions_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        live = {token: expiry for token, expiry in sessions.items() if expiry > now}
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(live, file, indent=2)
+    except OSError:
+        logging.warning("Could not persist sessions")
+
+
+def _api_keys() -> List[str]:
+    keys = []
+    if config.API_KEY:
+        keys.append(config.API_KEY)
+    extra = os.getenv("RMT_API_TOKENS", "")
+    keys.extend(k.strip() for k in extra.split(",") if k.strip())
+    return keys
+
+
 # --- Auth Dependency ---
 async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(None)):
     """Authenticate browser sessions, while retaining legacy API-key clients."""
@@ -335,7 +377,8 @@ async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(Non
         return
     if session:
         sessions.pop(session, None)
-    if config.API_KEY and x_api_key == config.API_KEY:
+        _save_sessions()
+    if x_api_key and x_api_key in _api_keys():
         return
     raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -344,6 +387,7 @@ async def verify_api_key(request: Request, x_api_key: Optional[str] = Header(Non
 async def lifespan(app: FastAPI):
     # Init DB
     database.create_db_and_tables()
+    _load_sessions()
 
     # Init HTTPX client for RD API
     rd_api.http_client = httpx.AsyncClient(follow_redirects=True, timeout=rd_api.HTTPX_TIMEOUT)
@@ -409,6 +453,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         raise HTTPException(status_code=401, detail="Invalid password")
     token = secrets.token_urlsafe(32)
     sessions[token] = time.time() + SESSION_TTL
+    _save_sessions()
     response.set_cookie(AUTH_COOKIE, token, max_age=SESSION_TTL, httponly=True, samesite="lax", secure=request.url.scheme == "https")
     return {"authenticated": True, "auth_configured": True}
 
@@ -416,6 +461,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
 @app.post("/api/auth/logout")
 async def logout(request: Request, response: Response):
     sessions.pop(request.cookies.get(AUTH_COOKIE), None)
+    _save_sessions()
     response.delete_cookie(AUTH_COOKIE)
     return {"authenticated": False}
 
