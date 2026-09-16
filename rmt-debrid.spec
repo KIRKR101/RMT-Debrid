@@ -6,18 +6,30 @@ then run ``pyinstaller rmt-debrid.spec``. Output is ``dist/rmt-debrid/`` (onedir
 """
 import os
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 ROOT = Path(os.path.abspath(SPECPATH))  # noqa: F821
 
+# Collect all submodules/data for tricky deps (httpx/httpcore/anyio/starlette).
+_binaries, _datas, _hidden = [], [], []
+for _pkg in ("httpx", "httpcore", "h11", "anyio", "starlette", "sqlmodel", "dotenv"):
+    try:
+        _b, _d, _h = collect_all(_pkg)
+        _binaries += _b
+        _datas += _d
+        _hidden += _h
+    except Exception:
+        pass
+
 a = Analysis(  # noqa: F821
     ['main.py'],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=_binaries,
     datas=[
         (str(ROOT / 'static'), 'static'),
         (str(ROOT / '.env.sample'), '.'),
-    ],
+    ] + _datas,
     hiddenimports=[
         'uvicorn.logging',
         'uvicorn.loops.auto',
@@ -26,11 +38,18 @@ a = Analysis(  # noqa: F821
         'sqlmodel',
         'sqlite3',
         'dotenv',
+        'dotenv.main',
         'httpx',
+        'httpcore',
+        'h11',
+        'anyio',
+        'starlette',
         'aiofiles',
         'tenacity',
         'multipart',
-    ],
+        'wsproto',
+        'websockets',
+    ] + _hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

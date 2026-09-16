@@ -28,10 +28,16 @@ Copy `.env.sample` next to the binary to pin `SERVER_HOST/PORT`, `CHUNK_SIZE`,
 
 ```bash
 bun install --cwd frontend && bun run --cwd frontend build
-pip install -r requirements.txt -r requirements-build.txt
-pyinstaller rmt-debrid.spec
+.venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
+.venv/bin/python -m PyInstaller rmt-debrid.spec
 ./dist/rmt-debrid/rmt-debrid --help
 ```
+
+> Must build with the same interpreter that has the deps: use
+> `.venv/bin/python -m PyInstaller`, not a Homebrew/system `pyinstaller`.
+> A bare `pyinstaller` on PATH (e.g. `/opt/homebrew/bin/pyinstaller`) bundles
+> the wrong environment and fails at runtime with
+> `ModuleNotFoundError: No module named 'httpx'`.
 
 ## Notes
 
