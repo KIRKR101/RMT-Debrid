@@ -100,6 +100,10 @@ async def _post_webhook(url: str, payload: Dict[str, Any], headers: Dict[str, st
 
 
 class DownloadManager:
+    # Minimum seconds between DB writes / WS broadcasts during hot progress loops.
+    SAVE_MIN_INTERVAL = 5.0
+    WS_MIN_INTERVAL = 1.0
+
     def __init__(self):
         self.semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_DOWNLOADS)
         self.tasks: Dict[str, DownloadTask] = {}
@@ -110,8 +114,25 @@ class DownloadManager:
         """Apply a new limit to downloads started after the setting changes."""
         self.semaphore = asyncio.Semaphore(limit)
 
-    async def broadcast_update(self, task: DownloadTask):
-        """Invoke update callback to notify UI/WebSockets."""
+    def save_task_coalesced(self, task: DownloadTask, force: bool = False) -> None:
+        """Reduce SQLite write amplification: persist at most every few seconds."""
+        runtime = self.runtime_states.get(task.id)
+        now = time.time()
+        terminal = task.status in ("completed", "failed", "rd_error", "cancelled", "added_to_rd")
+        if force or terminal or not runtime or now - runtime.last_db_save >= self.SAVE_MIN_INTERVAL:
+            save_task(task)
+            if runtime:
+                runtime.last_db_save = now
+
+    async def broadcast_update(self, task: DownloadTask, force: bool = False):
+        """Invoke update callback to notify UI/WebSockets (throttled in hot paths)."""
+        runtime = self.runtime_states.get(task.id)
+        now = time.time()
+        if runtime and not force:
+            terminal = task.status in ("completed", "failed", "rd_error", "cancelled", "added_to_rd")
+            if not terminal and now - runtime.last_ws_broadcast < self.WS_MIN_INTERVAL:
+                return
+            runtime.last_ws_broadcast = now
         if self.update_callback:
             # We call it as a coroutine if it is one
             res = self.update_callback(task)
@@ -613,6 +634,20 @@ class DownloadManager:
         try:
             task.output_path = final_filepath if task.total_files <= 1 else destination_folder
             os.makedirs(destination_folder, exist_ok=True)
+            # Disk guard: refuse to start when the volume is below MIN_FREE_BYTES.
+            try:
+                free_bytes = shutil.disk_usage(os.path.expanduser(destination_folder)).free
+                if free_bytes < int(getattr(config, "MIN_FREE_BYTES", 0) or 0):
+                    task.status = "failed"
+                    task.error_message = (
+                        f"Not enough free disk space ({free_bytes // (1024*1024)} MB free). "
+                        "Free up space or change the download folder."
+                    )
+                    save_task(task)
+                    await self.broadcast_update(task, force=True)
+                    return False
+            except OSError:
+                pass
             timeout = httpx.Timeout(30.0, connect=30.0, read=60.0)
             async with AsyncExitStack() as response_stack:
                 r = await response_stack.enter_async_context(
@@ -686,6 +721,20 @@ class DownloadManager:
                         await f.write(chunk)
                         downloaded_size += len(chunk)
 
+                        # Global bandwidth cap (MAX_MBPS, 0 = unlimited).
+                        max_mbps = float(getattr(config, "MAX_MBPS", 0) or 0)
+                        if max_mbps > 0:
+                            runtime.bandwidth_window_bytes += len(chunk)
+                            elapsed = now = time.time()
+                            window = elapsed - runtime.bandwidth_window_start
+                            if window >= 1.0:
+                                allowed = max_mbps * 1024 * 1024 * window
+                                if runtime.bandwidth_window_bytes > allowed:
+                                    over = runtime.bandwidth_window_bytes - allowed
+                                    await asyncio.sleep(over / (max_mbps * 1024 * 1024))
+                                runtime.bandwidth_window_start = time.time()
+                                runtime.bandwidth_window_bytes = 0
+
                         # Speed calculation (rolling window since last update)
                         now = time.time()
                         if now - runtime.last_update_time >= 1.0:
@@ -701,8 +750,8 @@ class DownloadManager:
                                 if task.current_file_index < len(files):
                                     files[task.current_file_index] = {**files[task.current_file_index], "progress": file_progress, "speed_mbps": task.speed_mbps}
                                     task.files_json = files
-                            save_task(task)
-                            
+                            self.save_task_coalesced(task)
+
                             runtime.last_update_time = now
                             runtime.last_downloaded_size = downloaded_size
                             await self.broadcast_update(task)

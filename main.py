@@ -28,6 +28,7 @@ import database
 import rd_api
 import scrapers
 import torrentio
+from paths import get_data_dir, resource_path
 from downloader import manager, sanitize_filename, delete_local_artifacts
 
 # --- WebSocket & Update Logic ---
@@ -115,7 +116,7 @@ async def send_task_update(task: models.DownloadTask):
 # Set the callback in manager
 manager.update_callback = send_task_update
 
-STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", "./storage.json")
+STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", str(get_data_dir() / "storage.json"))
 
 def _load_storage_cache() -> Dict:
     try:
@@ -388,13 +389,16 @@ async def lifespan(app: FastAPI):
         await rd_api.http_client.aclose()
 
 app = FastAPI(title="Real-Debrid Downloader", lifespan=lifespan)
-app.mount("/_app", StaticFiles(directory="static/_app"), name="svelte-app")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+_STATIC_DIR = resource_path("static")
+if _STATIC_DIR.is_dir():
+    if (_STATIC_DIR / "_app").is_dir():
+        app.mount("/_app", StaticFiles(directory=str(_STATIC_DIR / "_app")), name="svelte-app")
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 # --- Routes ---
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    return FileResponse("static/index.html")
+    return FileResponse(str(_STATIC_DIR / "index.html"))
 
 
 @app.post("/api/auth/login")
@@ -429,10 +433,39 @@ async def auth_session(request: Request):
 async def health():
     try:
         database.get_all_tasks()
-        disk = shutil.disk_usage(config.DOWNLOAD_FOLDER)
+        disk = shutil.disk_usage(os.path.expanduser(config.DOWNLOAD_FOLDER))
         return {"status": "ok", "database": "ok", "download_folder": "ok", "free_bytes": disk.free}
     except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/version")
+async def version():
+    return {"version": config.APP_VERSION, "data_dir": str(get_data_dir())}
+
+
+class SetupRequest(BaseModel):
+    rd_api_key: str = Field(min_length=1, max_length=256)
+    download_folder: Optional[str] = Field(default=None, max_length=1024)
+
+
+@app.get("/api/setup/status")
+async def setup_status():
+    return {"setup_required": not config.is_configured(), "version": config.APP_VERSION}
+
+
+@app.post("/api/setup")
+async def setup(payload: SetupRequest):
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    try:
+        result = config.update_settings(
+            rd_api_key=payload.rd_api_key.strip(),
+            download_folder=payload.download_folder,
+        )
+        return result
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @app.get("/api/status")
 async def status(auth=Depends(verify_api_key)):
@@ -453,7 +486,16 @@ async def get_settings(auth=Depends(verify_api_key)):
     return config.public_settings()
 
 
+def _require_rd_configured():
+    if not config.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Real-Debrid API key not configured. Complete setup via POST /api/setup or the Settings panel.",
+        )
+
+
 async def _enqueue_magnet(link: str, download_to_server: bool):
+    _require_rd_configured()
     task_id = str(uuid.uuid4())
     task = models.DownloadTask(
         id=task_id,
@@ -765,6 +807,7 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
 
 @app.post("/api/download", status_code=202)
 async def add_new_download(link: str = Form(...), auth=Depends(verify_api_key)):
+    _require_rd_configured()
     link = link.strip()
     if not link:
         raise HTTPException(status_code=400, detail="Link cannot be empty")
@@ -931,8 +974,35 @@ async def websocket_endpoint(websocket: WebSocket):
 async def spa_fallback(full_path: str):
     if full_path.startswith(("api/", "ws", "_app/", "static/")):
         raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse("static/index.html")
+    return FileResponse(str(_STATIC_DIR / "index.html"))
+
+def _parse_cli_args(argv: Optional[List[str]] = None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="RMT-Debrid headless server")
+    parser.add_argument("--host", default=config.SERVER_HOST)
+    parser.add_argument("--port", type=int, default=config.SERVER_PORT)
+    parser.add_argument("--data-dir", default=str(get_data_dir()))
+    parser.add_argument("--reload", action="store_true", default=config.RELOAD)
+    return parser.parse_args(argv)
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=config.SERVER_HOST, port=config.SERVER_PORT, reload=config.RELOAD)
+
+    _args = _parse_cli_args()
+    # --data-dir must win before anything else reads DATA_DIR-dependent paths.
+    # Re-exec is avoided: config already resolved DATA_DIR at import, so here we
+    # only honour host/port/reload overrides plus an explicit env check.
+    if os.getenv("RMT_DATA_DIR") != _args.data_dir and _args.data_dir != str(get_data_dir()):
+        os.environ["RMT_DATA_DIR"] = _args.data_dir
+        logging.warning("RMT_DATA_DIR changed via --data-dir; restart with the env var set to apply fully.")
+    # File logging for headless/exe runs (alongside console).
+    try:
+        _handler = logging.FileHandler(str(Path(_args.data_dir).expanduser() / "rmt-debrid.log"))
+        _handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"))
+        logging.getLogger().addHandler(_handler)
+    except OSError:
+        logging.warning("Could not attach file log handler")
+    logging.info("Starting RMT-Debrid v%s (data_dir=%s)", config.APP_VERSION, _args.data_dir)
+    uvicorn.run("main:app", host=_args.host, port=_args.port, reload=_args.reload)

@@ -26,7 +26,11 @@ def _webhook_events(value):
 # --- Configuration & Setup ---
 load_dotenv()
 
-_SETTINGS_FILE = Path(os.getenv("CONFIG_FILE", "./settings.json"))
+from paths import ensure_writable_or_fallback, get_data_dir
+
+DATA_DIR = ensure_writable_or_fallback(get_data_dir())
+
+_SETTINGS_FILE = Path(os.getenv("CONFIG_FILE", str(DATA_DIR / "settings.json")))
 
 def _load_saved_settings():
     try:
@@ -43,7 +47,7 @@ def _setting(name, default=None):
     return value if value not in (None, "") else os.getenv(name, default)
 
 RD_API_KEY = _setting("RD_API_KEY")
-DOWNLOAD_FOLDER = _setting("DOWNLOAD_FOLDER", "./downloads")
+DOWNLOAD_FOLDER = _setting("DOWNLOAD_FOLDER", str(DATA_DIR / "downloads"))
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
 SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
 RELOAD = os.getenv("RELOAD", "False").lower() == "true"
@@ -51,7 +55,11 @@ MAX_CONCURRENT_DOWNLOADS = int(_setting("MAX_CONCURRENT", "3"))
 WEBHOOK_URL = (_saved.get("WEBHOOK_URL") or "") if "WEBHOOK_URL" in _saved else os.getenv("WEBHOOK_URL", "")
 WEBHOOK_TOKEN = _saved["WEBHOOK_TOKEN"] if "WEBHOOK_TOKEN" in _saved else os.getenv("WEBHOOK_TOKEN", "")
 WEBHOOK_EVENTS = _webhook_events(_saved["WEBHOOK_EVENTS"] if "WEBHOOK_EVENTS" in _saved else os.getenv("WEBHOOK_EVENTS", "download.completed"))
-CHUNK_SIZE = 1024 * 1024  # 1MB chunk size as requested
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", str(1024 * 1024)))  # 1MB default, tunable for NAS/SSD
+MAX_MBPS = float(os.getenv("MAX_MBPS", "0") or 0)  # 0 = unlimited global local-download cap
+MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)))  # pause/fail below 1 GiB free
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+APP_VERSION = os.getenv("RMT_VERSION", os.getenv("APP_VERSION", "dev"))
 TORRENTIO_URL = os.getenv("TORRENTIO_URL", "https://torrentio.strem.fun")
 TORRENTIO_FILTER = os.getenv("TORRENTIO_FILTER", "")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "")
@@ -63,13 +71,19 @@ API_KEY = os.getenv("API_KEY") # Legacy header secret
 # Shared household password. API_KEY remains a backwards-compatible fallback.
 APP_PASSWORD = os.getenv("APP_PASSWORD") or API_KEY
 
-if not RD_API_KEY:
-    raise ValueError("RD_API_KEY not found in environment variables or .env file")
+# First-run mode: allow boot without an RD key so the setup wizard can save one.
+# Previously this raised ValueError at import, which breaks frozen executables.
+RD_CONFIGURED = bool(RD_API_KEY)
 if not DOWNLOAD_FOLDER:
-    raise ValueError("DOWNLOAD_FOLDER not found in environment variables or .env file")
+    DOWNLOAD_FOLDER = str(DATA_DIR / "downloads")
 
 # Ensure download folder exists
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+os.makedirs(os.path.expanduser(DOWNLOAD_FOLDER), exist_ok=True)
+
+
+def is_configured() -> bool:
+    """True once a Real-Debrid key has been provided via env or setup."""
+    return bool(RD_API_KEY)
 
 def public_settings():
     """Return settings safe to send to the browser."""
@@ -85,6 +99,10 @@ def public_settings():
         "auth_configured": bool(APP_PASSWORD),
         "torrentio_configured": bool(TORRENTIO_URL),
         "prowlarr_configured": bool(PROWLARR_URL),
+        "data_dir": str(DATA_DIR),
+        "version": APP_VERSION,
+        "setup_required": not bool(token),
+        "max_mbps": MAX_MBPS,
     }
 
 def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_downloads=None,
@@ -125,8 +143,10 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     return public_settings()
 
 # Setup basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+log_level = getattr(logging, LOG_LEVEL, logging.INFO)
+logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
 # Set httpx logger level higher to avoid verbose connection pool messages
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./downloads.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DATA_DIR / 'downloads.db'}")
+LOG_FILE = os.getenv("LOG_FILE", str(DATA_DIR / "rmt-debrid.log"))

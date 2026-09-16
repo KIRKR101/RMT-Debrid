@@ -63,3 +63,8 @@ class RuntimeState:
         self.rd_download_started = False
         self.local_download_started = False
         self.resume_requested = False
+        # Throttling helpers (not persisted)
+        self.last_db_save: float = 0.0
+        self.last_ws_broadcast: float = 0.0
+        self.bandwidth_window_start: float = time.time()
+        self.bandwidth_window_bytes: int = 0

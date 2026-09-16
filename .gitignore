@@ -2,7 +2,9 @@
 settings.json
 storage.json
 downloads/
+data/
 *.db
+TODO.md
 __pycache__/
 *.py[cod]
 .venv/
