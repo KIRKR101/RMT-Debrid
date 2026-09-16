@@ -109,10 +109,36 @@ class DownloadManager:
         self.tasks: Dict[str, DownloadTask] = {}
         self.runtime_states: Dict[str, RuntimeState] = {}
         self.update_callback: Optional[Callable[[DownloadTask], Any]] = None
+        self.bandwidth_lock = asyncio.Lock()
+        self.bandwidth_tokens = 0.0
+        self.bandwidth_last_refill = time.monotonic()
 
     def update_concurrency(self, limit: int):
         """Apply a new limit to downloads started after the setting changes."""
         self.semaphore = asyncio.Semaphore(limit)
+
+    async def throttle_bandwidth(self, byte_count: int) -> None:
+        """Consume from one shared token bucket for all local downloads."""
+        rate = float(getattr(config, "MAX_MBPS", 0) or 0) * 1024 * 1024
+        if rate <= 0 or byte_count <= 0:
+            return
+
+        # A chunk may be larger than one second of the configured rate; allow
+        # that single chunk through after waiting rather than deadlocking on a
+        # bucket whose capacity is smaller than the request.
+        capacity = max(rate, float(byte_count))
+        async with self.bandwidth_lock:
+            if self.bandwidth_tokens <= 0:
+                self.bandwidth_tokens = capacity
+            while True:
+                now = time.monotonic()
+                elapsed = now - self.bandwidth_last_refill
+                self.bandwidth_last_refill = now
+                self.bandwidth_tokens = min(capacity, self.bandwidth_tokens + elapsed * rate)
+                if self.bandwidth_tokens >= byte_count:
+                    self.bandwidth_tokens -= byte_count
+                    return
+                await asyncio.sleep((byte_count - self.bandwidth_tokens) / rate)
 
     def save_task_coalesced(self, task: DownloadTask, force: bool = False) -> None:
         """Reduce SQLite write amplification: persist at most every few seconds."""
@@ -722,18 +748,7 @@ class DownloadManager:
                         downloaded_size += len(chunk)
 
                         # Global bandwidth cap (MAX_MBPS, 0 = unlimited).
-                        max_mbps = float(getattr(config, "MAX_MBPS", 0) or 0)
-                        if max_mbps > 0:
-                            runtime.bandwidth_window_bytes += len(chunk)
-                            elapsed = now = time.time()
-                            window = elapsed - runtime.bandwidth_window_start
-                            if window >= 1.0:
-                                allowed = max_mbps * 1024 * 1024 * window
-                                if runtime.bandwidth_window_bytes > allowed:
-                                    over = runtime.bandwidth_window_bytes - allowed
-                                    await asyncio.sleep(over / (max_mbps * 1024 * 1024))
-                                runtime.bandwidth_window_start = time.time()
-                                runtime.bandwidth_window_bytes = 0
+                        await self.throttle_bandwidth(len(chunk))
 
                         # Speed calculation (rolling window since last update)
                         now = time.time()
