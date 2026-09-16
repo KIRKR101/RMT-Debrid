@@ -194,7 +194,7 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ url: setupWebhookUrl.trim() })
 			});
-			webhookTest = { ok: true, message: 'Test delivered — check your receiver.' };
+			webhookTest = { ok: true, message: 'Test delivered. Check your receiver.' };
 		} catch (error) {
 			webhookTest = { ok: false, message: error instanceof Error ? error.message : 'Webhook test failed' };
 		} finally {
@@ -1412,7 +1412,7 @@
 							<EmptyState
 								icon={Tray}
 								title="Queue is empty"
-								hint="Paste a link above — it will show up here with live progress."
+								hint="Paste a link above. It will show up here with live progress."
 							/>
 						{:else if filteredDownloads.length === 0}
 							<EmptyState
