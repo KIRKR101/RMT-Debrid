@@ -35,18 +35,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build executable (onedir)
+      - name: Build executable (onefile)
         run: |
           python -m PyInstaller rmt-debrid.spec
-          cp config.sample.toml .env.sample dist/rmt-debrid/
+          cp config.sample.toml .env.sample dist/
         env:
           RMT_VERSION: ${{ github.ref_name }}
 
       - name: Smoke test
-        run: |
-          ./dist/rmt-debrid/rmt-debrid --help || dist/rmt-debrid/rmt-debrid --help
+        run: ./dist/rmt-debrid --help
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/rmt-debrid/
+          path: |
+            dist/rmt-debrid
+            dist/config.sample.toml
+            dist/.env.sample

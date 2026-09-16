@@ -4,12 +4,16 @@ Headless server binary. No tray, no auto-browser — run it and open the printed
 
 ## Layout (portable, exe-adjacent)
 
-- `RMT_DATA_DIR` wins when set. Otherwise frozen builds use `<exe-dir>/data/`,
-  source runs use the current working directory.
+`dist/rmt-debrid` is a single file. Everything it needs at runtime sits next
+to it and is auto-created on first run:
+- `RMT_DATA_DIR` wins when set. Otherwise the binary uses `<exe-dir>/data/`.
 - If `<exe-dir>/data` is not writable, the app falls back to the OS user-data
   dir (`~/Library/Application Support/RMT-Debrid`, `~/.local/share/rmt-debrid`).
-- Data files: `settings.json`, `downloads.db`, `sessions.json`, `storage.json`,
+- Data files: `config.toml`, `downloads.db`, `sessions.json`, `storage.json`,
   `downloads/`, `backups/`, `rmt-debrid.log`.
+
+Note: onefile unpacks to a temp dir on every launch, so cold starts are a few
+seconds slower than onedir. Warm/running performance is identical.
 
 ## First run
 
@@ -41,8 +45,8 @@ Precedence: defaults in code < config file < environment variables.
 bun install --cwd frontend && bun run --cwd frontend build
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller rmt-debrid.spec
-cp config.sample.toml .env.sample dist/rmt-debrid/
-./dist/rmt-debrid/rmt-debrid --help
+cp config.sample.toml .env.sample dist/
+./dist/rmt-debrid --help
 ```
 
 > Must build with the same interpreter that has the deps: use

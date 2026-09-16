@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build for RMT-Debrid (macOS + Linux first, Windows later).
+"""PyInstaller onefile build for RMT-Debrid (macOS + Linux first, Windows later).
 
 Build the frontend first (``bun run build:frontend`` populates ``static/``),
-then run ``pyinstaller rmt-debrid.spec``. Output is ``dist/rmt-debrid/`` (onedir).
+then run ``python -m PyInstaller rmt-debrid.spec``. Output is a single
+``dist/rmt-debrid`` binary; runtime state lives in ``<exe-dir>/data/``.
 """
 import os
 from pathlib import Path
@@ -64,22 +65,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)  # noqa: F821
 exe = EXE(  # noqa: F821
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='rmt-debrid',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=True,  # headless server: keep console for logs
-)
-coll = COLLECT(  # noqa: F821
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='rmt-debrid',
 )
