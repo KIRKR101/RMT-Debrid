@@ -29,6 +29,7 @@ a = Analysis(  # noqa: F821
     datas=[
         (str(ROOT / 'static'), 'static'),
         (str(ROOT / '.env.sample'), '.'),
+        (str(ROOT / 'config.sample.toml'), '.'),
     ] + _datas,
     hiddenimports=[
         'uvicorn.logging',

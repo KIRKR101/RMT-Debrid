@@ -36,7 +36,9 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: Build executable (onedir)
-        run: python -m PyInstaller rmt-debrid.spec
+        run: |
+          python -m PyInstaller rmt-debrid.spec
+          cp config.sample.toml .env.sample dist/rmt-debrid/
         env:
           RMT_VERSION: ${{ github.ref_name }}
 

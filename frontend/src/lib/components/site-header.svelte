@@ -44,6 +44,7 @@
 		webhook_url: string;
 		webhook_token_set: boolean;
 		webhook_events: string[];
+		config_path?: string;
 	};
 
 	type StorageData = {
@@ -633,10 +634,10 @@
 									class="h-8 font-mono text-[13px]"
 								/>
 							</div>
-							<div class="grid gap-2">
-								<label for="max-concurrent" class="text-[13px] leading-none font-medium"
-									>Concurrent downloads</label
-								>
+						<div class="grid gap-2">
+							<label for="max-concurrent" class="text-[13px] leading-none font-medium"
+								>Concurrent downloads</label
+							>
 								<Input
 									id="max-concurrent"
 									type="number"
@@ -648,10 +649,15 @@
 									required
 									class="h-8 w-24 tabular-nums"
 								/>
-								<p class="text-xs leading-4 text-muted-foreground">
-									1–20 downloads can run at the same time.
+							<p class="text-xs leading-4 text-muted-foreground">
+								1–20 downloads can run at the same time.
+							</p>
+							{#if settings.config_path}
+								<p class="truncate font-mono text-[11px] text-muted-foreground" title={settings.config_path}>
+									Config: {settings.config_path}
 								</p>
-							</div>
+							{/if}
+						</div>
 							<div class="grid gap-2">
 								<label for="webhook-url" class="text-[13px] leading-none font-medium"
 									>Completion webhook</label

@@ -15,14 +15,19 @@ from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 from contextlib import asynccontextmanager
 
-# --data-dir must apply before config.py resolves DATA_DIR at import time.
-# Pre-parse it here (full argparse happens in __main__); OS env RMT_DATA_DIR
-# still wins if both are set since config prefers explicit env.
+# --data-dir / --config must apply before config.py resolves paths at import.
+# Pre-parse them here (full argparse happens in __main__); OS env
+# RMT_DATA_DIR / RMT_CONFIG_FILE still wins if both are set since config
+# prefers explicit env.
 for _i, _arg in enumerate(sys.argv):
     if _arg == "--data-dir" and _i + 1 < len(sys.argv):
         os.environ.setdefault("RMT_DATA_DIR", sys.argv[_i + 1])
     elif _arg.startswith("--data-dir="):
         os.environ.setdefault("RMT_DATA_DIR", _arg.split("=", 1)[1])
+    elif _arg == "--config" and _i + 1 < len(sys.argv):
+        os.environ.setdefault("RMT_CONFIG_FILE", sys.argv[_i + 1])
+    elif _arg.startswith("--config="):
+        os.environ.setdefault("RMT_CONFIG_FILE", _arg.split("=", 1)[1])
 
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form, HTTPException, Depends, Header, Query, Request, Response
@@ -1171,6 +1176,7 @@ def _parse_cli_args(argv: Optional[List[str]] = None):
     parser.add_argument("--host", default=config.SERVER_HOST)
     parser.add_argument("--port", type=int, default=config.SERVER_PORT)
     parser.add_argument("--data-dir", default=str(get_data_dir()))
+    parser.add_argument("--config", default=str(config._CONFIG_PATH))
     parser.add_argument("--reload", action="store_true", default=config.RELOAD)
     return parser.parse_args(argv)
 

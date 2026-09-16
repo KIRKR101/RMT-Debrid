@@ -51,6 +51,17 @@ def user_data_dir(app_name: str = "RMT-Debrid") -> Path:
     return Path(base) / app_name
 
 
+def user_config_dir(app_name: str = "RMT-Debrid") -> Path:
+    """OS-specific user config directory (XDG_CONFIG_HOME on Linux)."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / app_name
+    if os.name == "nt":
+        base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / app_name
+    base = os.getenv("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "rmt-debrid"
+
+
 def ensure_writable_or_fallback(preferred: Path) -> Path:
     try:
         preferred.mkdir(parents=True, exist_ok=True)

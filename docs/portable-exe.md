@@ -20,9 +20,20 @@ Headless server binary. No tray, no auto-browser — run it and open the printed
 
 ## Env management
 
-Precedence: OS env > `<data_dir>/.env` > Settings UI (`settings.json`).
-Copy `.env.sample` next to the binary to pin `SERVER_HOST/PORT`, `CHUNK_SIZE`,
-`MAX_MBPS`, `MIN_FREE_BYTES`, `LOG_LEVEL`, `RMT_VERSION`, `RMT_API_TOKENS`.
+Precedence: defaults in code < config file < environment variables.
+
+- Config file (TOML) resolution: `RMT_CONFIG_FILE` (or `--config`) >
+  `<data-dir>/config.toml` > `<exe-dir>/config.toml` > user config directory
+  (`~/Library/Application Support/RMT-Debrid/config.toml` on macOS,
+  `~/.config/rmt-debrid/config.toml` on Linux). A legacy `settings.json`
+  is migrated automatically on first boot.
+- Copy the bundled `config.sample.toml` to one of those locations and edit it,
+  or set values in the Settings panel of the web UI (it writes the same file).
+- OS environment always wins over the file, so `RD_API_KEY=xxx ./rmt-debrid`
+  overrides whatever is stored. A `.env` next to the binary (or in `data/`)
+  is also loaded for convenience.
+- Data (DB, downloads, sessions, logs) lives under `RMT_DATA_DIR`
+  (default `<exe-dir>/data`). Config and data are intentionally separate.
 
 ## Building locally
 
@@ -30,6 +41,7 @@ Copy `.env.sample` next to the binary to pin `SERVER_HOST/PORT`, `CHUNK_SIZE`,
 bun install --cwd frontend && bun run --cwd frontend build
 .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt
 .venv/bin/python -m PyInstaller rmt-debrid.spec
+cp config.sample.toml .env.sample dist/rmt-debrid/
 ./dist/rmt-debrid/rmt-debrid --help
 ```
 

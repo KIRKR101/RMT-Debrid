@@ -58,35 +58,176 @@ def _load_env_files():
 
 _load_env_files()
 
-from paths import ensure_writable_or_fallback, get_data_dir
+from paths import ensure_writable_or_fallback, get_data_dir, user_config_dir
 
 DATA_DIR = ensure_writable_or_fallback(get_data_dir())
 
-_SETTINGS_FILE = Path(os.getenv("CONFIG_FILE", str(DATA_DIR / "settings.json")))
+try:
+    import tomllib as _toml_reader  # Python 3.11+
+except ImportError:  # Python 3.8-3.10 (incl. the bundled venv)
+    import tomli as _toml_reader
+import tomli_w as _toml_writer
 
-def _load_saved_settings():
+# Canonical (lowercase) keys stored in config.toml. Uppercase variants from
+# legacy settings.json are accepted on read.
+_CANONICAL_KEYS = {
+    "rd_api_key": ("RD_API_KEY",),
+    "download_folder": ("DOWNLOAD_FOLDER",),
+    "max_concurrent": ("MAX_CONCURRENT", "MAX_CONCURRENT_DOWNLOADS"),
+    "webhook_url": ("WEBHOOK_URL",),
+    "webhook_token": ("WEBHOOK_TOKEN",),
+    "webhook_events": ("WEBHOOK_EVENTS",),
+}
+
+_LEGACY_FILENAMES = ("settings.json",)
+
+
+def _normalize_keys(values: dict) -> dict:
+    """Map legacy UPPER keys to canonical lowercase keys (first hit wins)."""
+    normalized: dict = {}
+    if not isinstance(values, dict):
+        return normalized
+    lowered = {str(key).lower(): value for key, value in values.items()}
+    for canonical, aliases in _CANONICAL_KEYS.items():
+        if canonical in lowered and lowered[canonical] not in (None, ""):
+            normalized[canonical] = lowered[canonical]
+            continue
+        for alias in aliases:
+            if alias.lower() in lowered and lowered[alias.lower()] not in (None, ""):
+                normalized[canonical] = lowered[alias.lower()]
+                break
+    return normalized
+
+
+def _resolve_config_path() -> Path:
+    """Explicit path > portable exe-adjacent > user config directory."""
+    for variable in ("RMT_CONFIG_FILE", "CONFIG_FILE"):
+        override = os.getenv(variable)
+        if override:
+            return Path(override).expanduser()
     try:
-        with _SETTINGS_FILE.open("r", encoding="utf-8") as file:
+        from paths import exe_dir, is_frozen
+    except ImportError:  # pragma: no cover
+        exe_dir = is_frozen = None  # type: ignore
+    try:
+        data_toml = DATA_DIR / "config.toml"
+        if data_toml.is_file():
+            return data_toml
+        if exe_dir is not None:
+            exe_toml = exe_dir() / "config.toml"
+            if exe_toml.is_file():
+                return exe_toml
+        if is_frozen is not None and not is_frozen():
+            cwd_toml = Path.cwd() / "config.toml"
+            if cwd_toml.is_file():
+                return cwd_toml
+    except OSError:
+        pass
+    return user_config_dir() / "config.toml"
+
+
+_CONFIG_PATH = _resolve_config_path()
+_USE_JSON = _CONFIG_PATH.suffix.lower() == ".json"
+
+
+def _read_toml_file(path: Path) -> dict:
+    try:
+        with path.open("rb") as file:
+            values = _toml_reader.load(file)
+            return values if isinstance(values, dict) else {}
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
+
+
+def _read_json_file(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as file:
             values = json.load(file)
             return values if isinstance(values, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
+
+def _legacy_json_candidates():
+    candidates = []
+    try:
+        from paths import exe_dir, is_frozen
+
+        candidates.append(exe_dir() / "settings.json")
+        if not is_frozen():
+            candidates.append(Path.cwd() / "settings.json")
+    except (ImportError, OSError):  # pragma: no cover
+        pass
+    candidates.append(DATA_DIR / "settings.json")
+    seen = set()
+    for candidate in candidates:
+        if candidate != _CONFIG_PATH and candidate not in seen:
+            seen.add(candidate)
+            yield candidate
+
+
+def _load_saved_settings():
+    if _USE_JSON:
+        return _normalize_keys(_read_json_file(_CONFIG_PATH))
+    values = _normalize_keys(_read_toml_file(_CONFIG_PATH))
+    if values:
+        return values
+    # One-time migration: adopt a legacy settings.json if present.
+    for legacy in _legacy_json_candidates():
+        migrated = _normalize_keys(_read_json_file(legacy))
+        if migrated:
+            try:
+                _write_config_file(migrated)
+            except OSError:
+                pass
+            return migrated
+    return {}
+
+
+def _write_config_file(values: dict) -> None:
+    """Atomically persist the config file (TOML, or JSON for legacy paths)."""
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix="config-", suffix=".json" if _USE_JSON else ".toml", dir=str(_CONFIG_PATH.parent)
+    )
+    try:
+        if _USE_JSON:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(values, file, indent=2)
+                file.write("\n")
+        else:
+            with os.fdopen(fd, "wb") as file:
+                _toml_writer.dump(values, file)
+        os.replace(temporary, _CONFIG_PATH)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
 _saved = _load_saved_settings()
 
-def _setting(name, default=None):
-    value = _saved.get(name)
-    return value if value not in (None, "") else os.getenv(name, default)
 
-RD_API_KEY = _setting("RD_API_KEY")
-DOWNLOAD_FOLDER = _setting("DOWNLOAD_FOLDER", str(DATA_DIR / "downloads"))
+def _setting(canonical: str, default=None):
+    """Environment variables win over the config file.
+
+    Model: defaults in code → config file → environment variables.
+    """
+    for env_name in (canonical.upper(), *_CANONICAL_KEYS.get(canonical, ())):
+        env_value = os.getenv(env_name)
+        if env_value not in (None, ""):
+            return env_value
+    value = _saved.get(canonical)
+    return value if value not in (None, "") else default
+
+
+RD_API_KEY = _setting("rd_api_key")
+DOWNLOAD_FOLDER = _setting("download_folder", str(DATA_DIR / "downloads"))
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
 SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
 RELOAD = os.getenv("RELOAD", "False").lower() == "true"
-MAX_CONCURRENT_DOWNLOADS = int(_setting("MAX_CONCURRENT", "3"))
-WEBHOOK_URL = (_saved.get("WEBHOOK_URL") or "") if "WEBHOOK_URL" in _saved else os.getenv("WEBHOOK_URL", "")
-WEBHOOK_TOKEN = _saved["WEBHOOK_TOKEN"] if "WEBHOOK_TOKEN" in _saved else os.getenv("WEBHOOK_TOKEN", "")
-WEBHOOK_EVENTS = _webhook_events(_saved["WEBHOOK_EVENTS"] if "WEBHOOK_EVENTS" in _saved else os.getenv("WEBHOOK_EVENTS", "download.completed"))
+MAX_CONCURRENT_DOWNLOADS = int(_setting("max_concurrent", "3"))
+WEBHOOK_URL = _setting("webhook_url", "")
+WEBHOOK_TOKEN = _setting("webhook_token", "")
+WEBHOOK_EVENTS = _webhook_events(_setting("webhook_events", "download.completed"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", str(1024 * 1024)))  # 1MB default, tunable for NAS/SSD
 MAX_MBPS = float(os.getenv("MAX_MBPS", "0") or 0)  # 0 = unlimited global local-download cap
 MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)))  # pause/fail below 1 GiB free
@@ -132,6 +273,7 @@ def public_settings():
         "torrentio_configured": bool(TORRENTIO_URL),
         "prowlarr_configured": bool(PROWLARR_URL),
         "data_dir": str(DATA_DIR),
+        "config_path": str(_CONFIG_PATH),
         "version": APP_VERSION,
         "setup_required": not bool(token),
         "max_mbps": MAX_MBPS,
@@ -157,19 +299,18 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     new_webhook_token = WEBHOOK_TOKEN if webhook_token is None else webhook_token.strip()
     new_webhook_events = WEBHOOK_EVENTS if webhook_events is None else _webhook_events(webhook_events)
     Path(new_folder).expanduser().mkdir(parents=True, exist_ok=True)
-    values = {"RD_API_KEY": new_token, "DOWNLOAD_FOLDER": new_folder, "MAX_CONCURRENT": concurrency,
-              "WEBHOOK_URL": new_webhook_url, "WEBHOOK_TOKEN": new_webhook_token,
-              "WEBHOOK_EVENTS": ",".join(new_webhook_events)}
-    _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="settings-", suffix=".json", dir=str(_SETTINGS_FILE.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(values, file, indent=2)
-            file.write("\n")
-        os.replace(temporary, _SETTINGS_FILE)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    if _USE_JSON:
+        # Legacy explicit JSON path: preserve the historic UPPER_CASE schema.
+        values = {"RD_API_KEY": new_token, "DOWNLOAD_FOLDER": new_folder, "MAX_CONCURRENT": concurrency,
+                  "WEBHOOK_URL": new_webhook_url, "WEBHOOK_TOKEN": new_webhook_token,
+                  "WEBHOOK_EVENTS": ",".join(new_webhook_events)}
+    else:
+        values = {"rd_api_key": new_token, "download_folder": new_folder, "max_concurrent": concurrency,
+                  "webhook_url": new_webhook_url, "webhook_token": new_webhook_token,
+                  "webhook_events": list(new_webhook_events)}
+    _write_config_file(values)
+    _saved.clear()
+    _saved.update(_normalize_keys(values))
     RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS = new_token, str(Path(new_folder).expanduser()), concurrency
     WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS = new_webhook_url, new_webhook_token, new_webhook_events
     return public_settings()
