@@ -31,8 +31,7 @@ Precedence: defaults in code < config file < environment variables.
 - Config file (TOML) resolution: `RMT_CONFIG_FILE` (or `--config`) >
   `<data-dir>/config.toml` > `<exe-dir>/config.toml` > user config directory
   (`~/Library/Application Support/RMT-Debrid/config.toml` on macOS,
-  `~/.config/rmt-debrid/config.toml` on Linux). A legacy `settings.json`
-  is migrated automatically on first boot.
+  `~/.config/rmt-debrid/config.toml` on Linux).
 - Copy the bundled `config.sample.toml` to one of those locations and edit it,
   or set values in the Settings panel of the web UI (it writes the same file).
 - OS environment always wins over the file, so `RD_API_KEY=xxx ./rmt-debrid`

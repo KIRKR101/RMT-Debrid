@@ -3,7 +3,7 @@
 Priority for the data directory:
   1. ``RMT_DATA_DIR`` env var (explicit, configurable)
   2. Frozen (PyInstaller) builds: ``<exe-dir>/data`` (portable, exe-adjacent)
-  3. Dev / source runs: current working directory (preserves ``./settings.json`` etc.)
+  3. Dev / source runs: current working directory
 
 ``resource_path()`` resolves bundled read-only assets (``static/`` frontend
 build) both in source checkouts and inside ``sys._MEIPASS``.

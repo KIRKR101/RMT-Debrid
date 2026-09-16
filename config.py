@@ -1,6 +1,5 @@
 import os
 import logging
-import json
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -68,8 +67,7 @@ except ImportError:  # Python 3.8-3.10 (incl. the bundled venv)
     import tomli as _toml_reader
 import tomli_w as _toml_writer
 
-# Canonical (lowercase) keys stored in config.toml. Uppercase variants from
-# legacy settings.json are accepted on read.
+# Canonical (lowercase) keys stored in config.toml.
 _CANONICAL_KEYS = {
     "rd_api_key": ("RD_API_KEY",),
     "download_folder": ("DOWNLOAD_FOLDER",),
@@ -85,24 +83,15 @@ _CANONICAL_KEYS = {
     "torrentio_filter": ("TORRENTIO_FILTER",),
 }
 
-_LEGACY_FILENAMES = ("settings.json",)
-
-
 def _normalize_keys(values: dict) -> dict:
-    """Map legacy UPPER keys to canonical lowercase keys (first hit wins)."""
-    normalized: dict = {}
+    """Keep only supported canonical TOML keys."""
     if not isinstance(values, dict):
-        return normalized
-    lowered = {str(key).lower(): value for key, value in values.items()}
-    for canonical, aliases in _CANONICAL_KEYS.items():
-        if canonical in lowered and lowered[canonical] not in (None, ""):
-            normalized[canonical] = lowered[canonical]
-            continue
-        for alias in aliases:
-            if alias.lower() in lowered and lowered[alias.lower()] not in (None, ""):
-                normalized[canonical] = lowered[alias.lower()]
-                break
-    return normalized
+        return {}
+    return {
+        key: values[key]
+        for key in _CANONICAL_KEYS
+        if key in values and values[key] not in (None, "")
+    }
 
 
 def _resolve_config_path() -> Path:
@@ -116,7 +105,8 @@ def _resolve_config_path() -> Path:
     for variable in ("RMT_CONFIG_FILE", "CONFIG_FILE"):
         override = os.getenv(variable)
         if override:
-            return Path(override).expanduser()
+            path = Path(override).expanduser()
+            return path if path.suffix.lower() == ".toml" else path.with_suffix(".toml")
     try:
         from paths import exe_dir, is_frozen
 
@@ -147,7 +137,6 @@ def _resolve_config_path() -> Path:
 
 
 _CONFIG_PATH = _resolve_config_path()
-_USE_JSON = _CONFIG_PATH.suffix.lower() == ".json"
 
 
 def _read_toml_file(path: Path) -> dict:
@@ -159,65 +148,19 @@ def _read_toml_file(path: Path) -> dict:
         return {}
 
 
-def _read_json_file(path: Path) -> dict:
-    try:
-        with path.open("r", encoding="utf-8") as file:
-            values = json.load(file)
-            return values if isinstance(values, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
-
-
-def _legacy_json_candidates():
-    candidates = []
-    try:
-        from paths import exe_dir, is_frozen
-
-        candidates.append(exe_dir() / "settings.json")
-        if not is_frozen():
-            candidates.append(Path.cwd() / "settings.json")
-    except (ImportError, OSError):  # pragma: no cover
-        pass
-    candidates.append(DATA_DIR / "settings.json")
-    seen = set()
-    for candidate in candidates:
-        if candidate != _CONFIG_PATH and candidate not in seen:
-            seen.add(candidate)
-            yield candidate
-
-
 def _load_saved_settings():
-    if _USE_JSON:
-        return _normalize_keys(_read_json_file(_CONFIG_PATH))
-    values = _normalize_keys(_read_toml_file(_CONFIG_PATH))
-    if values:
-        return values
-    # One-time migration: adopt a legacy settings.json if present.
-    for legacy in _legacy_json_candidates():
-        migrated = _normalize_keys(_read_json_file(legacy))
-        if migrated:
-            try:
-                _write_config_file(migrated)
-            except OSError:
-                pass
-            return migrated
-    return {}
+    return _normalize_keys(_read_toml_file(_CONFIG_PATH))
 
 
 def _write_config_file(values: dict) -> None:
-    """Atomically persist the config file (TOML, or JSON for legacy paths)."""
+    """Atomically persist the TOML configuration file."""
     _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
-        prefix="config-", suffix=".json" if _USE_JSON else ".toml", dir=str(_CONFIG_PATH.parent)
+        prefix="config-", suffix=".toml", dir=str(_CONFIG_PATH.parent)
     )
     try:
-        if _USE_JSON:
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
-                json.dump(values, file, indent=2)
-                file.write("\n")
-        else:
-            with os.fdopen(fd, "wb") as file:
-                _toml_writer.dump(values, file)
+        with os.fdopen(fd, "wb") as file:
+            _toml_writer.dump(values, file)
         os.replace(temporary, _CONFIG_PATH)
     finally:
         if os.path.exists(temporary):
@@ -354,18 +297,12 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
         _validate_http_url(new_torrentio_url, "Torrentio URL")
     new_torrentio_filter = TORRENTIO_FILTER if torrentio_filter is None else torrentio_filter.strip()
     Path(new_folder).expanduser().mkdir(parents=True, exist_ok=True)
-    if _USE_JSON:
-        # Legacy explicit JSON path: preserve the historic UPPER_CASE schema.
-        values = {"RD_API_KEY": new_token, "DOWNLOAD_FOLDER": new_folder, "MAX_CONCURRENT": concurrency,
-                  "WEBHOOK_URL": new_webhook_url, "WEBHOOK_TOKEN": new_webhook_token,
-                  "WEBHOOK_EVENTS": ",".join(new_webhook_events)}
-    else:
-        values = {"rd_api_key": new_token, "download_folder": new_folder, "max_concurrent": concurrency,
-                  "webhook_url": new_webhook_url, "webhook_token": new_webhook_token,
-                  "webhook_events": list(new_webhook_events),
-                  "app_password": new_password, "prowlarr_url": new_prowlarr_url,
-                  "prowlarr_api_key": new_prowlarr_key, "prowlarr_result_limit": new_prowlarr_limit,
-                  "torrentio_url": new_torrentio_url, "torrentio_filter": new_torrentio_filter}
+    values = {"rd_api_key": new_token, "download_folder": new_folder, "max_concurrent": concurrency,
+              "webhook_url": new_webhook_url, "webhook_token": new_webhook_token,
+              "webhook_events": list(new_webhook_events),
+              "app_password": new_password, "prowlarr_url": new_prowlarr_url,
+              "prowlarr_api_key": new_prowlarr_key, "prowlarr_result_limit": new_prowlarr_limit,
+              "torrentio_url": new_torrentio_url, "torrentio_filter": new_torrentio_filter}
     _write_config_file(values)
     _saved.clear()
     _saved.update(_normalize_keys(values))

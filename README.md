@@ -49,8 +49,8 @@ A web interface built with FastAPI and WebSockets to manage downloads via your R
         `WEBHOOK_URL`, `WEBHOOK_TOKEN`, and comma-separated `WEBHOOK_EVENTS`.
 
     The optional **Settings** panel in the web UI can update the Real-Debrid key,
-    download folder, and concurrency later. Changes are stored in `settings.json`
-    (which is intentionally ignored by git) and take effect without restarting.
+    download folder, and concurrency later. Changes are stored in the
+    git-ignored `config.toml` file and take effect without restarting.
 
 ## Frontend development
 
@@ -122,7 +122,7 @@ torrent info hash, and supports filtering releases by source.
 
 *   **State Management:** Download state is stored in `downloads.db`; interrupted
     downloads are restored when the application starts. Runtime settings are stored
-    in the local, git-ignored `settings.json` file.
+    in the local, git-ignored `config.toml` file.
 
 ## Authentication and API
 
@@ -225,10 +225,10 @@ handles its own persistence if delivery guarantees are required.
 ### Settings precedence
 
 Environment variables provide the initial configuration. Settings changed in
-the web UI are stored in the git-ignored `settings.json` file and take
+the web UI are stored in the git-ignored `config.toml` file and take
 precedence over `.env` values. Changing `.env` will therefore not override a
 value already saved by the UI; remove or update the corresponding value in
-`settings.json`, then restart the server, if you need the environment value to
+`config.toml`, then restart the server, if you need the environment value to
 take effect.
 
 ### Testing

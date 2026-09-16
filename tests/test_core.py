@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 
 TEST_ROOT = tempfile.mkdtemp(prefix="rmt-debrid-test-")
-os.environ["CONFIG_FILE"] = os.path.join(TEST_ROOT, "settings.json")
+os.environ["CONFIG_FILE"] = os.path.join(TEST_ROOT, "config.toml")
 os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(TEST_ROOT, "downloads.db")
 os.environ["RD_API_KEY"] = "test-token"
 os.environ["DOWNLOAD_FOLDER"] = os.path.join(TEST_ROOT, "downloads")

@@ -22,7 +22,7 @@ class TomlConfigTests(unittest.TestCase):
             for name in (
                 "RD_API_KEY", "DOWNLOAD_FOLDER", "MAX_CONCURRENT_DOWNLOADS",
                 "WEBHOOK_URL", "WEBHOOK_TOKEN", "WEBHOOK_EVENTS",
-                "_CONFIG_PATH", "_USE_JSON",
+                "_CONFIG_PATH",
             )
         }
         self._saved = dict(config_module._saved)
@@ -34,14 +34,14 @@ class TomlConfigTests(unittest.TestCase):
         config_module._saved.clear()
         config_module._saved.update(self._saved)
 
-    def test_normalize_accepts_legacy_upper_keys(self):
+    def test_normalize_keeps_canonical_keys(self):
         out = config_module._normalize_keys({
-            "RD_API_KEY": "key", "DOWNLOAD_FOLDER": "/tmp/x",
-            "MAX_CONCURRENT": 5, "WEBHOOK_EVENTS": "download.completed",
+            "rd_api_key": "key", "download_folder": "/tmp/x",
+            "max_concurrent": 5, "webhook_events": ["download.completed"],
         })
         self.assertEqual(out, {
             "rd_api_key": "key", "download_folder": "/tmp/x",
-            "max_concurrent": 5, "webhook_events": "download.completed",
+            "max_concurrent": 5, "webhook_events": ["download.completed"],
         })
 
     def test_env_beats_config_file(self):
@@ -62,11 +62,16 @@ class TomlConfigTests(unittest.TestCase):
                 config_module._resolve_config_path(), Path("/tmp/custom/config.toml")
             )
 
+    def test_non_toml_override_is_stored_as_toml(self):
+        with patch.dict(os.environ, {"RMT_CONFIG_FILE": "/tmp/custom/settings.json"}):
+            self.assertEqual(
+                config_module._resolve_config_path(), Path("/tmp/custom/settings.toml")
+            )
+
     def test_update_settings_round_trips_toml(self):
         tmp = Path(tempfile.mkdtemp(prefix="rmt-toml-"))
         downloads = tmp / "downloads"
-        with patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"), \
-             patch.object(config_module, "_USE_JSON", False):
+        with patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"):
             result = config_module.update_settings(
                 rd_api_key="toml-test-key", download_folder=str(downloads),
                 max_concurrent_downloads=4, app_password="household",
@@ -89,8 +94,7 @@ class TomlConfigTests(unittest.TestCase):
 
     def test_update_settings_rejects_bad_prowlarr_url(self):
         tmp = Path(tempfile.mkdtemp(prefix="rmt-toml-"))
-        with patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"), \
-             patch.object(config_module, "_USE_JSON", False):
+        with patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"):
             with self.assertRaises(ValueError):
                 config_module.update_settings(
                     rd_api_key="toml-test-key",
@@ -108,7 +112,7 @@ class SetupEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "WEBHOOK_URL", "WEBHOOK_TOKEN", "WEBHOOK_EVENTS", "APP_PASSWORD",
                 "PROWLARR_URL", "PROWLARR_API_KEY", "PROWLARR_RESULT_LIMIT",
                 "TORRENTIO_URL", "TORRENTIO_FILTER",
-                "_CONFIG_PATH", "_USE_JSON",
+                "_CONFIG_PATH",
             )
         }
         self._saved = dict(config_module._saved)
@@ -125,8 +129,7 @@ class SetupEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         tmp = Path(tempfile.mkdtemp(prefix="rmt-setup-"))
         with patch.object(config_module, "RD_API_KEY", ""), \
-             patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"), \
-             patch.object(config_module, "_USE_JSON", False):
+             patch.object(config_module, "_CONFIG_PATH", tmp / "config.toml"):
             out = await main.setup(main.SetupRequest(
                 rd_api_key="setup-key", app_password="household",
                 prowlarr_url="http://prowlarr:9696",

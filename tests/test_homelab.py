@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 TEST_ROOT = tempfile.mkdtemp(prefix="rmt-homelab-")
-os.environ.setdefault("CONFIG_FILE", os.path.join(TEST_ROOT, "settings.json"))
+os.environ.setdefault("CONFIG_FILE", os.path.join(TEST_ROOT, "config.toml"))
 os.environ.setdefault("DATABASE_URL", "sqlite:///" + os.path.join(TEST_ROOT, "downloads.db"))
 os.environ.setdefault("RD_API_KEY", "test-token")
 os.environ.setdefault("DOWNLOAD_FOLDER", os.path.join(TEST_ROOT, "downloads"))

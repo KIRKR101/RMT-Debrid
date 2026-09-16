@@ -1,4 +1,5 @@
 .env
+config.toml
 settings.json
 storage.json
 downloads/
