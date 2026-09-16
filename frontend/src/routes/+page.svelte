@@ -79,6 +79,7 @@
 
 	let adding = $state(false);
 	let clearingCompleted = $state(false);
+	let bulkBusy = $state(false);
 	let initialLoading = $state(true);
 	let cancelDialogOpen = $state(false);
 	let pendingCancelId = $state<string | null>(null);
@@ -524,6 +525,31 @@
 		clearingCompleted = false;
 	}
 
+	async function bulkAction(action: 'pause' | 'resume' | 'cancel' | 'retry') {
+		if (bulkBusy) return;
+		bulkBusy = true;
+		try {
+			await request('/api/downloads/bulk-action', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action })
+			});
+			showSuccess(
+				action === 'pause'
+					? 'Pausing all active downloads.'
+					: action === 'resume'
+						? 'Resuming downloads.'
+						: action === 'retry'
+							? 'Retrying failed downloads.'
+							: 'Cancelling downloads.'
+			);
+		} catch (error) {
+			showError(error instanceof Error ? error.message : 'Bulk action failed');
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
 	async function confirmClearCompleted() {
 		clearCompletedDialogOpen = false;
 		await clearCompleted();
@@ -759,6 +785,40 @@
 												class="size-3"
 											/>{/if}
 										<span>Clear done</span>
+									</Button>
+								{/if}
+								{#if activeDownloads > 0}
+									<Button
+										variant="ghost"
+										size="xs"
+										class="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+										disabled={bulkBusy}
+										onclick={() => bulkAction('pause')}
+										title="Pause all active downloads"
+									>
+										<Pause class="size-3" /><span>Pause all</span>
+									</Button>
+									<Button
+										variant="ghost"
+										size="xs"
+										class="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+										disabled={bulkBusy}
+										onclick={() => bulkAction('resume')}
+										title="Resume all paused downloads"
+									>
+										<Play class="size-3" /><span>Resume all</span>
+									</Button>
+								{/if}
+								{#if failedDownloads > 0}
+									<Button
+										variant="ghost"
+										size="xs"
+										class="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+										disabled={bulkBusy}
+										onclick={() => bulkAction('retry')}
+										title="Retry all failed downloads"
+									>
+										<ArrowCounterClockwise class="size-3" /><span>Retry failed</span>
 									</Button>
 								{/if}
 							</div>

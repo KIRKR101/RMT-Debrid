@@ -485,6 +485,139 @@ async def health():
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.get("/api/ready")
+async def ready():
+    """Readiness for load balancers / autostart: DB readable + folder writable."""
+    try:
+        database.get_all_tasks()
+        folder = os.path.expanduser(config.DOWNLOAD_FOLDER)
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, ".writetest")
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        os.remove(probe)
+        disk = shutil.disk_usage(folder)
+        return {"status": "ready", "free_bytes": disk.free, "version": config.APP_VERSION}
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/metrics")
+async def metrics():
+    """Minimal Prometheus exposition (no auth: safe counters only, no filenames)."""
+    tasks = database.get_all_tasks()
+    by_status: Dict[str, int] = {}
+    for task in tasks:
+        by_status[task.status] = by_status.get(task.status, 0) + 1
+    try:
+        free_bytes = shutil.disk_usage(os.path.expanduser(config.DOWNLOAD_FOLDER)).free
+    except OSError:
+        free_bytes = -1
+    lines = [
+        "# HELP rmt_downloads_total Downloads by status.",
+        "# TYPE rmt_downloads_total gauge",
+    ]
+    for status_name in sorted(by_status):
+        lines.append(f'rmt_downloads_total{{status="{status_name}"}} {by_status[status_name]}')
+    lines += [
+        "# HELP rmt_download_folder_free_bytes Free bytes in download folder.",
+        "# TYPE rmt_download_folder_free_bytes gauge",
+        f"rmt_download_folder_free_bytes {free_bytes}",
+        "# HELP rmt_version_info App version (value always 1).",
+        "# TYPE rmt_version_info gauge",
+        f'rmt_version_info{{version="{config.APP_VERSION}"}} 1',
+    ]
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
+class TestWebhookRequest(BaseModel):
+    url: Optional[str] = Field(default=None, max_length=2048)
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)):
+    """Send a test `download.completed`-shaped payload without starting a download."""
+    import httpx as _httpx
+
+    url = (payload.url or config.WEBHOOK_URL or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    body = {
+        "event": "download.completed",
+        "download_id": "test",
+        "name": "webhook-test.zip",
+        "status": None,
+        "progress": None,
+        "size_mb": 1.0,
+        "output_path": os.path.join(os.path.expanduser(config.DOWNLOAD_FOLDER), "webhook-test.zip"),
+    }
+    headers = {"Content-Type": "application/json"}
+    if config.WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {config.WEBHOOK_TOKEN}"
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, json=body, headers=headers)
+            response.raise_for_status()
+        return {"success": True}
+    except _httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Webhook test failed: {exc}") from exc
+
+
+class BulkAction(BaseModel):
+    action: str = Field(pattern=r"^(pause|resume|cancel|retry)$")
+    ids: Optional[List[str]] = Field(default=None, max_length=1000)
+
+
+@app.post("/api/downloads/bulk-action")
+async def bulk_action(payload: BulkAction, auth=Depends(verify_api_key)):
+    """Pause / resume / cancel / retry many downloads at once (ids omitted = all active)."""
+    tasks = database.get_all_tasks()
+    if payload.ids:
+        wanted = set(payload.ids)
+        tasks = [t for t in tasks if t.id in wanted]
+    elif payload.action in ("pause", "cancel"):
+        active = {"pending", "starting", "unrestricting", "downloading", "processing_torrent",
+                  "waiting_rd", "rd_downloading", "selecting_files", "paused"}
+        tasks = [t for t in tasks if t.status in active and (payload.action != "pause" or t.status != "paused")]
+    elif payload.action in ("resume", "retry"):
+        tasks = [t for t in tasks if t.status in ("paused", "failed", "rd_error", "cancelled")]
+    handled = 0
+    for task in tasks:
+        if not manager.get_task(task.id):
+            manager.tasks[task.id] = task
+            manager.runtime_states[task.id] = models.RuntimeState()
+        try:
+            if payload.action == "pause":
+                await manager.pause_task(task.id)
+            elif payload.action == "resume":
+                await manager.resume_task(task.id)
+            elif payload.action == "cancel":
+                await manager.cancel_task(task.id)
+            elif payload.action == "retry":
+                # Retry reuses resume path for terminal states.
+                await manager.resume_task(task.id)
+            handled += 1
+        except Exception:
+            logging.exception("Bulk %s failed for %s", payload.action, task.id)
+    await broadcast_state_update()
+    return {"action": payload.action, "handled": handled}
+
+
+@app.delete("/api/downloads/completed")
+async def bulk_clear_completed(auth=Depends(verify_api_key)):
+    """Remove all completed/failed/cancelled rows (local files kept)."""
+    removed = 0
+    for task in database.get_all_tasks():
+        if task.status in ("completed", "added_to_rd", "failed", "rd_error", "cancelled"):
+            await manager.cancel_task(task.id)
+            if database.delete_task_db(task.id):
+                manager.tasks.pop(task.id, None)
+                manager.runtime_states.pop(task.id, None)
+                removed += 1
+    await broadcast_state_update()
+    return {"removed": removed}
+
+
 @app.get("/api/version")
 async def version():
     return {"version": config.APP_VERSION, "data_dir": str(get_data_dir())}

@@ -100,6 +100,7 @@
 	let refreshingStorage = $state(false);
 
 	let saving = $state(false);
+	let testingWebhook = $state(false);
 	let detailsDialogOpen = $state(false);
 	let storageDialogOpen = $state(false);
 	let discardSettingsDialogOpen = $state(false);
@@ -256,6 +257,23 @@
 			};
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function testWebhook() {
+		if (testingWebhook) return;
+		testingWebhook = true;
+		try {
+			await request('/api/settings/test-webhook', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url: settings.webhook_url || undefined })
+			});
+			toast.success('Test webhook delivered.');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Webhook test failed');
+		} finally {
+			testingWebhook = false;
 		}
 	}
 
@@ -650,6 +668,17 @@
 								<p class="text-xs leading-4 text-muted-foreground">
 									POSTs when a download completes.
 								</p>
+								<div>
+									<Button
+										variant="outline"
+										size="sm"
+										class="h-7 text-xs"
+										disabled={testingWebhook || !settings.webhook_url}
+										onclick={testWebhook}
+									>
+										{testingWebhook ? 'Sending…' : 'Send test'}
+									</Button>
+								</div>
 							</div>
 							<div class="grid gap-2">
 								<label for="webhook-token" class="text-[13px] leading-none font-medium"
