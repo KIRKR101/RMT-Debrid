@@ -17,10 +17,12 @@ seconds slower than onedir. Warm/running performance is identical.
 
 ## First run
 
-1. Run `./rmt-debrid --port 8000` (see `--help` for `--host`, `--data-dir`).
-2. Open `http://127.0.0.1:8000`.
-3. If no `RD_API_KEY` is set, the API returns `503` on download routes until you
-   complete setup: `POST /api/setup {"rd_api_key": "..."}` or use Settings in the UI.
+1. Run `./rmt-debrid --port 8000` (see `--help` for `--host`, `--data-dir`, `--config`).
+2. Open `http://127.0.0.1:8000` for the guided setup page: Real-Debrid key
+   (with a live key check), download folder, household password, Prowlarr,
+   Torrentio (with a filter builder and live preview), and webhook (with a
+   test button). If no `RD_API_KEY` is set, download routes return `503`
+   until setup completes.
 
 ## Env management
 

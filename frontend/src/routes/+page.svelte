@@ -24,6 +24,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
+	import * as Select from '$lib/components/ui/select';
 	import { Progress } from '$lib/components/ui/progress';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -118,6 +119,91 @@
 	let setupWebhookUrl = $state('');
 	let setupError = $state('');
 	let setupSaving = $state(false);
+
+	type RdCheckResult =
+		| { state: 'loading' }
+		| { state: 'ok'; username: string; accountType: string; expiration: string }
+		| { state: 'error'; message: string };
+	let rdCheck = $state<RdCheckResult | null>(null);
+	let webhookTesting = $state(false);
+	let webhookTest = $state<{ ok: boolean; message: string } | null>(null);
+
+	const torrentioSorts = [
+		{ value: 'qualitysize', label: 'Best quality first, then biggest file' },
+		{ value: 'quality', label: 'Best quality first, then most seeders' },
+		{ value: 'seeders', label: 'Most seeders first' },
+		{ value: 'size', label: 'Biggest file first' }
+	] as const;
+	const torrentioExcludes = [
+		{ value: 'cam', label: 'CAM', hint: 'Audience recordings' },
+		{ value: 'scr', label: 'Screener', hint: 'Unfinished preview copies' },
+		{ value: 'threed', label: '3D', hint: 'Stereoscopic releases' },
+		{ value: 'unknown', label: 'Unknown', hint: 'No quality tagged' },
+		{ value: 'other', label: 'Other rips', hint: 'DVD, HD and unclassified rips' },
+		{ value: '480p', label: '480p', hint: 'Low-resolution files' }
+	] as const;
+	let builderSort = $state<string>('qualitysize');
+	let builderExcludes = $state<string[]>(['cam', 'scr', 'threed', 'unknown', 'other']);
+	let builderUseRdKey = $state(true);
+	const builderPreview = $derived(
+		[
+			`sort=${builderSort}`,
+			...(builderExcludes.length ? [`qualityfilter=${[...builderExcludes].sort().join(',')}`] : []),
+			...(builderUseRdKey && setupKey.trim() ? [`realdebrid=${setupKey.trim()}`] : [])
+		].join('|')
+	);
+
+	function toggleBuilderExclude(value: string) {
+		builderExcludes = builderExcludes.includes(value)
+			? builderExcludes.filter((item) => item !== value)
+			: [...builderExcludes, value];
+	}
+
+	function applyBuilderFilter() {
+		setupTorrentioFilter = builderPreview;
+		showSuccess('Filter copied into the Torrentio filter field.');
+	}
+
+	async function checkRdKey() {
+		if (!setupKey.trim() || rdCheck?.state === 'loading') return;
+		rdCheck = { state: 'loading' };
+		try {
+			const data = await request('/api/setup/check-rd', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ rd_api_key: setupKey.trim() })
+			});
+			rdCheck = {
+				state: 'ok',
+				username: typeof data.username === 'string' ? data.username : 'Unknown account',
+				accountType: typeof data.type === 'string' && data.type ? data.type : '',
+				expiration:
+					typeof data.expiration === 'string' && data.expiration
+						? ` · valid until ${data.expiration}`
+						: ''
+			};
+		} catch (error) {
+			rdCheck = { state: 'error', message: error instanceof Error ? error.message : 'Key check failed' };
+		}
+	}
+
+	async function testSetupWebhook() {
+		if (!setupWebhookUrl.trim() || webhookTesting) return;
+		webhookTesting = true;
+		webhookTest = null;
+		try {
+			await request('/api/setup/test-webhook', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url: setupWebhookUrl.trim() })
+			});
+			webhookTest = { ok: true, message: 'Test delivered — check your receiver.' };
+		} catch (error) {
+			webhookTest = { ok: false, message: error instanceof Error ? error.message : 'Webhook test failed' };
+		} finally {
+			webhookTesting = false;
+		}
+	}
 
 	let socket: WebSocket | null = null;
 	let reconnectAttempts = 0;
@@ -629,11 +715,6 @@
 		}
 	}
 
-	function clearSetupKey() {
-		setupKey = '';
-		setupError = '';
-	}
-
 	onMount(() => {
 		request('/api/setup/status')
 			.then((data) => {
@@ -671,97 +752,148 @@
 		<CircleNotch class="size-5 animate-spin text-muted-foreground" aria-label="Loading" />
 	</main>
 {:else if setupRequired}
-	<main class="grid min-h-dvh place-items-center bg-background px-4 py-12 text-foreground sm:py-16">
-		<div class="w-full max-w-md">
-			<div class="mb-8 px-1">
+	<main class="min-h-dvh bg-background text-foreground">
+		<div class="mx-auto w-full max-w-2xl px-4 py-12 sm:px-8 sm:py-16">
+			<div class="mb-8">
 				<span class="text-xs font-medium tracking-normal text-muted-foreground">RMT-Debrid</span>
-			</div>
-			<div class="ledger p-5 sm:p-6">
-				<h1 class="text-lg font-semibold tracking-tight">Set up RMT-Debrid</h1>
-				<p class="mt-1 text-[13px] text-muted-foreground">
-					Everything is stored on this machine. You can change it all later in Settings.
+				<h1 class="mt-2 text-2xl font-semibold tracking-tight text-foreground">
+					Welcome to RMT-Debrid
+				</h1>
+				<p class="mt-1 max-w-[62ch] text-sm leading-6 text-muted-foreground">
+					Connect your Real-Debrid account, choose where downloads land, and tune the
+					optional extras. Anything here can be changed later in Settings.
 				</p>
-				<form
-					class="mt-5 grid gap-5"
-					onsubmit={(event) => {
-						event.preventDefault();
-						submitSetup();
-					}}
+			</div>
+			<form
+				class="grid gap-4"
+				onsubmit={(event) => {
+					event.preventDefault();
+					submitSetup();
+				}}
+			>
+				<section
+					aria-labelledby="setup-rd-heading"
+					class="rounded-lg border border-border bg-card p-5"
 				>
-					<section aria-labelledby="setup-rd-heading" class="grid gap-2.5">
-						<h2 id="setup-rd-heading" class="text-[13px] font-medium text-foreground">
-							Real-Debrid
+					<div class="flex items-baseline gap-2.5">
+						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">1</span>
+						<h2 id="setup-rd-heading" class="text-sm font-semibold tracking-tight">
+							Connect Real-Debrid
 						</h2>
-						<div class="grid gap-1.5">
-							<label for="setup-key" class="text-[13px] leading-none font-medium">API key</label>
-							<div class="relative">
-								<Input
-									id="setup-key"
-									type={setupShowKey ? 'text' : 'password'}
-									bind:value={setupKey}
-									placeholder="Paste your API key"
-									autocomplete="off"
-									autofocus
-									aria-describedby="setup-key-help"
-									aria-invalid={setupError ? 'true' : undefined}
-									class={`h-10 border-transparent bg-muted/60 pr-16 font-mono text-[13px] ${setupError ? '!border-destructive/60 !bg-destructive/[0.04]' : ''}`}
-									oninput={() => {
-										if (setupError) setupError = '';
-									}}
-								/>
-								<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
-									<button
-										type="button"
-										onclick={pasteSetupKey}
-										aria-label="Paste from clipboard"
-										title="Paste from clipboard"
-										class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
-									>
-										<Clipboard class="size-4" />
-									</button>
-									<button
-										type="button"
-										onclick={() => (setupShowKey = !setupShowKey)}
-										aria-label={setupShowKey ? 'Hide API key' : 'Show API key'}
-										aria-pressed={setupShowKey}
-										class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
-									>
-										{#if setupShowKey}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}
-									</button>
-								</div>
+					</div>
+					<p class="mt-1.5 text-[13px] leading-5 text-muted-foreground">
+						RMT-Debrid downloads through your Real-Debrid account, so it needs your
+						API key. Nothing is downloaded until you add something.
+					</p>
+					<div class="mt-4 grid gap-1.5">
+						<label for="setup-key" class="text-[13px] leading-none font-medium">API key</label>
+						<div class="relative">
+							<Input
+								id="setup-key"
+								type={setupShowKey ? 'text' : 'password'}
+								bind:value={setupKey}
+								placeholder="Paste your API key"
+								autocomplete="off"
+								autofocus
+								aria-describedby="setup-key-help"
+								aria-invalid={setupError ? 'true' : undefined}
+								class={`h-10 border-transparent bg-muted/60 pr-16 font-mono text-[13px] ${setupError ? '!border-destructive/60 !bg-destructive/[0.04]' : ''}`}
+								oninput={() => {
+									if (setupError) setupError = '';
+									rdCheck = null;
+								}}
+							/>
+							<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
+								<button
+									type="button"
+									onclick={pasteSetupKey}
+									aria-label="Paste from clipboard"
+									title="Paste from clipboard"
+									class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								>
+									<Clipboard class="size-4" />
+								</button>
+								<button
+									type="button"
+									onclick={() => (setupShowKey = !setupShowKey)}
+									aria-label={setupShowKey ? 'Hide API key' : 'Show API key'}
+									aria-pressed={setupShowKey}
+									class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+								>
+									{#if setupShowKey}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}
+								</button>
 							</div>
-							<p id="setup-key-help" class="text-xs leading-4 text-muted-foreground">
-								Real-Debrid API key not configured, find yours
-								<a
-									href="https://real-debrid.com/apitoken"
-									target="_blank"
-									rel="noopener noreferrer"
-									class="underline underline-offset-2 hover:text-foreground">here</a
-								>.
-							</p>
 						</div>
-					</section>
+						<p id="setup-key-help" class="text-xs leading-4 text-muted-foreground">
+							Real-Debrid API key not configured, find yours
+							<a
+								href="https://real-debrid.com/apitoken"
+								target="_blank"
+								rel="noopener noreferrer"
+								class="underline underline-offset-2 hover:text-foreground">here</a
+							>.
+						</p>
+						<div class="mt-1 flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="h-7 text-xs"
+								disabled={!setupKey.trim() || rdCheck?.state === 'loading'}
+								onclick={checkRdKey}
+							>
+								{#if rdCheck?.state === 'loading'}<CircleNotch class="size-3.5 animate-spin" /> Checking…{:else}Check
+									key{/if}
+							</Button>
+							{#if rdCheck?.state === 'ok'}
+								<p class="flex items-center gap-1.5 text-xs text-foreground" role="status">
+									<Check class="size-3.5" aria-hidden="true" />
+									<span
+										>Connected as <strong class="font-semibold">{rdCheck.username}</strong>{#if rdCheck.accountType}<span
+												class="text-muted-foreground"
+											>
+												· {rdCheck.accountType}</span
+											>{/if}<span class="text-muted-foreground">{rdCheck.expiration}</span
+										></span
+									>
+								</p>
+							{:else if rdCheck?.state === 'error'}
+								<p class="text-xs text-destructive" role="alert">{rdCheck.message}</p>
+							{/if}
+						</div>
+					</div>
+				</section>
 
-					<section aria-labelledby="setup-downloads-heading" class="grid gap-2.5">
-						<h2 id="setup-downloads-heading" class="text-[13px] font-medium text-foreground">
-							Downloads
+				<section
+					aria-labelledby="setup-downloads-heading"
+					class="rounded-lg border border-border bg-card p-5"
+				>
+					<div class="flex items-baseline gap-2.5">
+						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">2</span>
+						<h2 id="setup-downloads-heading" class="text-sm font-semibold tracking-tight">
+							Where downloads go
 						</h2>
-						<div class="grid gap-1.5">
+					</div>
+					<div class="mt-4 grid gap-4 sm:grid-cols-[1fr_7rem]">
+						<div class="grid min-w-0 gap-1.5">
 							<label for="setup-folder" class="text-[13px] leading-none font-medium"
-								>Download folder <span class="font-normal text-muted-foreground">(optional)</span></label
+								>Download folder</label
 							>
 							<Input
 								id="setup-folder"
 								bind:value={setupFolder}
-								placeholder="/downloads"
+								placeholder="Default folder"
 								autocomplete="off"
 								spellcheck="false"
 								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
 							/>
+							<p class="text-xs leading-4 text-muted-foreground">
+								Finished files land here. Leave blank for the default.
+							</p>
 						</div>
-						<div class="grid gap-1.5">
+						<div class="grid content-start gap-1.5">
 							<label for="setup-concurrent" class="text-[13px] leading-none font-medium"
-								>Concurrent downloads</label
+								>At once</label
 							>
 							<Input
 								id="setup-concurrent"
@@ -772,35 +904,61 @@
 								bind:value={setupConcurrent}
 								class="h-10 w-24 border-transparent bg-muted/60 tabular-nums"
 							/>
+							<p class="text-xs leading-4 text-muted-foreground">1–20 files.</p>
 						</div>
-					</section>
+					</div>
+				</section>
 
-					<section aria-labelledby="setup-access-heading" class="grid gap-2.5">
-						<h2 id="setup-access-heading" class="text-[13px] font-medium text-foreground">
-							Access
+				<section
+					aria-labelledby="setup-access-heading"
+					class="rounded-lg border border-border bg-card p-5"
+				>
+					<div class="flex items-baseline gap-2.5">
+						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">3</span>
+						<h2 id="setup-access-heading" class="text-sm font-semibold tracking-tight">
+							Who can open this
 						</h2>
-						<div class="grid gap-1.5">
-							<label for="setup-password" class="text-[13px] leading-none font-medium"
-								>Household password <span class="font-normal text-muted-foreground">(optional)</span></label
-							>
-							<Input
-								id="setup-password"
-								type="password"
-								bind:value={setupPassword}
-								placeholder="Leave blank for no sign-in"
-								autocomplete="new-password"
-								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
-							/>
-							<p class="text-xs leading-4 text-muted-foreground">
-								Protects the web UI on your home network.
-							</p>
-						</div>
-					</section>
+						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+							>OPTIONAL</span
+						>
+					</div>
+					<div class="mt-4 grid gap-1.5">
+						<label for="setup-password" class="text-[13px] leading-none font-medium"
+							>Household password</label
+						>
+						<Input
+							id="setup-password"
+							type="password"
+							bind:value={setupPassword}
+							placeholder="Leave blank for no sign-in"
+							autocomplete="new-password"
+							class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
+						/>
+						<p class="text-xs leading-4 text-muted-foreground">
+							Anyone on your network who opens this page has full control, so set
+							one if the page is reachable beyond your household.
+						</p>
+					</div>
+				</section>
 
-					<section aria-labelledby="setup-discover-heading" class="grid gap-2.5">
-						<h2 id="setup-discover-heading" class="text-[13px] font-medium text-foreground">
-							Discover <span class="font-normal text-muted-foreground">(optional)</span>
+				<section
+					aria-labelledby="setup-discover-heading"
+					class="rounded-lg border border-border bg-card p-5"
+				>
+					<div class="flex items-baseline gap-2.5">
+						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">4</span>
+						<h2 id="setup-discover-heading" class="text-sm font-semibold tracking-tight">
+							Finding releases
 						</h2>
+						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+							>OPTIONAL</span
+						>
+					</div>
+					<p class="mt-1.5 text-[13px] leading-5 text-muted-foreground">
+						The Discover page works out of the box. Add Prowlarr to search your own
+						indexers, or shape Torrentio results with a filter.
+					</p>
+					<div class="mt-4 grid gap-4">
 						<div class="grid gap-1.5">
 							<label for="setup-prowlarr-url" class="text-[13px] leading-none font-medium"
 								>Prowlarr URL</label
@@ -823,14 +981,14 @@
 								id="setup-prowlarr-key"
 								bind:value={setupProwlarrKey}
 								type="password"
-								placeholder="Prowlarr API key"
+								placeholder="Found in Prowlarr → Settings → General"
 								autocomplete="off"
 								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
 							/>
 						</div>
 						<div class="grid gap-1.5">
 							<label for="setup-torrentio-url" class="text-[13px] leading-none font-medium"
-								>Torrentio URL</label
+								>Torrentio server</label
 							>
 							<Input
 								id="setup-torrentio-url"
@@ -841,6 +999,9 @@
 								spellcheck="false"
 								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
 							/>
+							<p class="text-xs leading-4 text-muted-foreground">
+								Leave blank for the public server.
+							</p>
 						</div>
 						<div class="grid gap-1.5">
 							<label for="setup-torrentio-filter" class="text-[13px] leading-none font-medium"
@@ -849,49 +1010,168 @@
 							<Input
 								id="setup-torrentio-filter"
 								bind:value={setupTorrentioFilter}
-								placeholder="sort=qualitysize|…"
+								placeholder="Build one below, or paste your own"
 								autocomplete="off"
 								spellcheck="false"
 								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
 							/>
+							<div class="rounded-lg border border-border bg-muted/30 p-3">
+								<p class="text-xs font-medium text-foreground">Filter builder</p>
+								<p class="mt-0.5 text-xs leading-4 text-muted-foreground">
+									Decides which Torrentio results show up in Discover.
+								</p>
+								<div class="mt-3 grid gap-1.5">
+									<span class="text-xs font-medium" id="builder-sort-label">Sort results</span>
+									<Select.Root type="single" bind:value={builderSort} name="builder-sort">
+										<Select.Trigger aria-labelledby="builder-sort-label" class="h-8 w-full text-xs"
+											><span data-slot="select-value"
+												>{torrentioSorts.find((option) => option.value === builderSort)
+													?.label}</span
+											></Select.Trigger
+										>
+										<Select.Content>
+											{#each torrentioSorts as option}
+												<Select.Item value={option.value} label={option.label}
+													>{option.label}</Select.Item
+												>
+											{/each}
+										</Select.Content>
+									</Select.Root>
+								</div>
+								<fieldset class="mt-3 grid gap-1.5">
+									<legend class="text-xs font-medium">Hide these qualities</legend>
+									<div class="grid gap-1 sm:grid-cols-2">
+										{#each torrentioExcludes as option}
+											{@const checked = builderExcludes.includes(option.value)}
+											<button
+												type="button"
+												role="checkbox"
+												aria-checked={checked}
+												onclick={() => toggleBuilderExclude(option.value)}
+												title={option.hint}
+												class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-left text-[13px] hover:bg-muted"
+											>
+												<Checkbox
+													{checked}
+													tabindex={-1}
+													class="pointer-events-none"
+													aria-hidden="true"
+												/>
+												<span class="min-w-0 flex-1 truncate">{option.label}</span>
+												<span class="hidden shrink-0 text-[11px] text-muted-foreground lg:inline"
+													>{option.hint}</span
+												>
+											</button>
+										{/each}
+									</div>
+								</fieldset>
+								<button
+									type="button"
+									role="checkbox"
+									aria-checked={builderUseRdKey}
+									onclick={() => (builderUseRdKey = !builderUseRdKey)}
+									class="mt-2 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-left text-[13px] hover:bg-muted"
+								>
+									<Checkbox
+										checked={builderUseRdKey}
+										tabindex={-1}
+										class="pointer-events-none"
+										aria-hidden="true"
+									/>
+									<span class="min-w-0 flex-1">Pass my Real-Debrid key to Torrentio</span>
+								</button>
+								<p class="-mt-0.5 px-1.5 text-xs leading-4 text-muted-foreground">
+									Lets Torrentio return links your account can use directly.
+								</p>
+								<code
+									class="mt-2 block break-all rounded-md bg-muted/60 px-3 py-2 font-mono text-xs"
+									aria-label="Filter preview">{builderPreview || '(empty filter)'}</code
+								>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									class="mt-2 h-7 text-xs"
+									onclick={applyBuilderFilter}
+								>
+									Use this filter
+								</Button>
+							</div>
 						</div>
-					</section>
+					</div>
+				</section>
 
-					<section aria-labelledby="setup-notify-heading" class="grid gap-2.5">
-						<h2 id="setup-notify-heading" class="text-[13px] font-medium text-foreground">
-							Notifications <span class="font-normal text-muted-foreground">(optional)</span>
+				<section
+					aria-labelledby="setup-notify-heading"
+					class="rounded-lg border border-border bg-card p-5"
+				>
+					<div class="flex items-baseline gap-2.5">
+						<span class="font-mono text-xs text-muted-foreground" aria-hidden="true">5</span>
+						<h2 id="setup-notify-heading" class="text-sm font-semibold tracking-tight">
+							Notifications
 						</h2>
-						<div class="grid gap-1.5">
-							<label for="setup-webhook" class="text-[13px] leading-none font-medium"
-								>Completion webhook</label
-							>
-							<Input
-								id="setup-webhook"
-								bind:value={setupWebhookUrl}
-								type="url"
-								placeholder="https://ntfy.example.com/downloads"
-								autocomplete="off"
-								spellcheck="false"
-								class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
-							/>
-						</div>
-					</section>
-
-					{#if setupError}
-						<div
-							role="alert"
-							class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-[13px] leading-5 text-destructive"
+						<span class="ml-auto shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+							>OPTIONAL</span
 						>
-							<WarningCircle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-							<p>{setupError}</p>
+					</div>
+					<div class="mt-4 grid gap-1.5">
+						<label for="setup-webhook" class="text-[13px] leading-none font-medium"
+							>Completion webhook</label
+						>
+						<Input
+							id="setup-webhook"
+							bind:value={setupWebhookUrl}
+							type="url"
+							placeholder="https://ntfy.example.com/downloads"
+							autocomplete="off"
+							spellcheck="false"
+							class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
+						/>
+						<p class="text-xs leading-4 text-muted-foreground">
+							Pings a URL when a download finishes. Works with ntfy, Gotify,
+							Discord, Home Assistant and anything that takes JSON over HTTP.
+						</p>
+						<div class="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="h-7 text-xs"
+								disabled={!setupWebhookUrl.trim() || webhookTesting}
+								onclick={testSetupWebhook}
+							>
+								{#if webhookTesting}<CircleNotch class="size-3.5 animate-spin" /> Sending…{:else}Send
+									test{/if}
+							</Button>
+							{#if webhookTest}
+								<p
+									class={webhookTest.ok ? 'text-xs text-foreground' : 'text-xs text-destructive'}
+									role={webhookTest.ok ? 'status' : 'alert'}
+								>
+									{webhookTest.message}
+								</p>
+							{/if}
 						</div>
-					{/if}
-					<Button type="submit" class="h-10 w-full" disabled={setupSaving || !setupKey.trim()}
-						>{#if setupSaving}<CircleNotch class="size-4 animate-spin" /> Saving…{:else}Finish
-							setup{/if}</Button
+					</div>
+				</section>
+
+				{#if setupError}
+					<div
+						role="alert"
+						class="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-[13px] leading-5 text-destructive"
 					>
-				</form>
-			</div>
+						<WarningCircle class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+						<p>{setupError}</p>
+					</div>
+				{/if}
+				<Button type="submit" class="h-10 w-full" disabled={setupSaving || !setupKey.trim()}
+					>{#if setupSaving}<CircleNotch class="size-4 animate-spin" /> Saving…{:else}Finish
+						setup{/if}</Button
+				>
+				<p class="text-center text-xs text-muted-foreground">
+					You can change everything later in Settings.
+				</p>
+			</form>
 		</div>
 	</main>
 {:else if authChecked && authenticated}

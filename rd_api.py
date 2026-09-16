@@ -19,6 +19,48 @@ def is_infringing(response: object) -> bool:
     message = str(response.get("error", "")).lower()
     return code == 35 or "infringing" in message
 
+
+async def validate_token(token: str) -> Dict:
+    """Check a Real-Debrid API token without touching the configured key.
+
+    Returns the `/user` payload on success, or a dict with an `error` key.
+    Used by the first-run setup page so keys can be verified before saving.
+    """
+    token = (token or "").strip()
+    if not token:
+        return {"error": "An API key is required", "status_code": 400}
+    try:
+        if http_client is not None:
+            response = await http_client.get(
+                f"{RD_API_HOST}/user",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=HTTPX_TIMEOUT,
+            )
+        else:  # pragma: no cover - lifecycle always sets the shared client
+            async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
+                response = await client.get(
+                    f"{RD_API_HOST}/user",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+    except httpx.RequestError as exc:
+        logging.warning("Real-Debrid token check failed: %s", exc)
+        return {"error": "Could not reach Real-Debrid", "status_code": 502}
+    if response.status_code in (401, 403):
+        return {"error": "Real-Debrid rejected this key (unauthorized)", "status_code": 401}
+    try:
+        payload = response.json()
+    except ValueError:
+        return {"error": "Real-Debrid returned an unreadable response", "status_code": 502}
+    if isinstance(payload, dict) and "error" in payload:
+        return {
+            "error": str(payload.get("error", "Real-Debrid rejected this key")),
+            "error_code": payload.get("error_code"),
+            "status_code": response.status_code,
+        }
+    if not isinstance(payload, dict) or "username" not in payload:
+        return {"error": "Real-Debrid returned an unexpected response", "status_code": 502}
+    return payload
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def rd_request(endpoint: str, method: str = 'GET', params: Optional[Dict] = None, data: Optional[Dict] = None) -> Optional[Dict]:
     """Makes an asynchronous request to the Real-Debrid API with retries."""

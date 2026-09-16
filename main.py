@@ -553,14 +553,15 @@ class TestWebhookRequest(BaseModel):
     url: Optional[str] = Field(default=None, max_length=2048)
 
 
-@app.post("/api/settings/test-webhook")
-async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)):
-    """Send a test `download.completed`-shaped payload without starting a download."""
+async def _deliver_test_webhook(url: str) -> None:
+    """POST a canned completed-download payload, raising HTTPException on failure."""
     import httpx as _httpx
 
-    url = (payload.url or config.WEBHOOK_URL or "").strip()
+    url = (url or "").strip()
     if not url:
-        raise HTTPException(status_code=400, detail="No webhook URL configured")
+        raise HTTPException(status_code=400, detail="Enter a webhook URL first")
+    if not re.match(r"^https?://.+", url, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Webhook URL must use HTTP or HTTPS")
     body = {
         "event": "download.completed",
         "download_id": "test",
@@ -577,9 +578,48 @@ async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)
         async with _httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json=body, headers=headers)
             response.raise_for_status()
-        return {"success": True}
     except _httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Webhook test failed: {exc}") from exc
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)):
+    """Send a test `download.completed`-shaped payload without starting a download."""
+    url = (payload.url or config.WEBHOOK_URL or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No webhook URL configured")
+    await _deliver_test_webhook(url)
+    return {"success": True}
+
+
+class RdKeyCheck(BaseModel):
+    rd_api_key: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/api/setup/check-rd")
+async def setup_check_rd(payload: RdKeyCheck):
+    """Validate a Real-Debrid key during first-run setup without saving it."""
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    result = await rd_api.validate_token(payload.rd_api_key)
+    if "error" in result:
+        status_code = 401 if result.get("status_code") == 401 else 502
+        raise HTTPException(status_code=status_code, detail=str(result["error"]))
+    return {
+        "username": result.get("username"),
+        "type": result.get("type"),
+        "expiration": result.get("expiration"),
+        "points": result.get("points"),
+    }
+
+
+@app.post("/api/setup/test-webhook")
+async def setup_test_webhook(payload: TestWebhookRequest):
+    """Try a webhook URL during first-run setup without saving it."""
+    if config.is_configured():
+        raise HTTPException(status_code=409, detail="Already configured")
+    await _deliver_test_webhook(payload.url or "")
+    return {"success": True}
 
 
 class BulkAction(BaseModel):

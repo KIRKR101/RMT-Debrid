@@ -27,6 +27,10 @@ TORRENTIO_FILTER=sort=qualitysize|qualityfilter=threed,other,scr,cam,unknown|rea
 The filter is appended to server-side requests and is never sent to the
 browser.
 
+The first-run setup page includes a filter builder (sort order, hidden
+qualities, optional Real-Debrid key passthrough) with a live preview, so most
+installs never need to hand-write this string.
+
 If `TORRENTIO_URL` is explicitly set to an empty or invalid value, title
 search continues to work but release searches return an error. Leaving it
 unset is the recommended zero-configuration setup.
