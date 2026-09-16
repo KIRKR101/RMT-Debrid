@@ -44,7 +44,7 @@ import database
 import rd_api
 import scrapers
 import torrentio
-from paths import get_data_dir, resource_path
+from paths import resource_path
 from downloader import manager, sanitize_filename, delete_local_artifacts
 
 # --- WebSocket & Update Logic ---
@@ -132,7 +132,7 @@ async def send_task_update(task: models.DownloadTask):
 # Set the callback in manager
 manager.update_callback = send_task_update
 
-STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", str(get_data_dir() / "storage.json"))
+STORAGE_CACHE_FILE = os.getenv("STORAGE_CACHE_FILE", str(config.DATA_DIR / "storage.json"))
 
 def _load_storage_cache() -> Dict:
     try:
@@ -348,7 +348,7 @@ sessions: Dict[str, float] = {}
 
 
 def _sessions_file() -> Path:
-    return Path(get_data_dir()) / "sessions.json"
+    return config.DATA_DIR / "sessions.json"
 
 
 def _load_sessions() -> None:
@@ -722,7 +722,7 @@ async def bulk_clear_completed(auth=Depends(verify_api_key)):
 
 @app.get("/api/version")
 async def version():
-    return {"version": config.APP_VERSION, "data_dir": str(get_data_dir())}
+    return {"version": config.APP_VERSION, "data_dir": str(config.DATA_DIR)}
 
 
 class SetupRequest(BaseModel):
@@ -1288,7 +1288,7 @@ def _parse_cli_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="RMT-Debrid headless server")
     parser.add_argument("--host", default=config.SERVER_HOST)
     parser.add_argument("--port", type=int, default=config.SERVER_PORT)
-    parser.add_argument("--data-dir", default=str(get_data_dir()))
+    parser.add_argument("--data-dir", default=str(config.DATA_DIR))
     parser.add_argument("--config", default=str(config._CONFIG_PATH))
     parser.add_argument("--reload", action="store_true", default=config.RELOAD)
     return parser.parse_args(argv)
@@ -1302,12 +1302,12 @@ if __name__ == "__main__":
     # so just log it here. RMT_DATA_DIR env wins if both are set.
     # File logging for headless/exe runs (alongside console).
     try:
-        _handler = logging.FileHandler(str(Path(_args.data_dir).expanduser() / "rmt-debrid.log"))
+        _handler = logging.FileHandler(str(config.DATA_DIR / "rmt-debrid.log"))
         _handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"))
         logging.getLogger().addHandler(_handler)
     except OSError:
         logging.warning("Could not attach file log handler")
-    logging.info("Starting RMT-Debrid v%s (data_dir=%s)", config.APP_VERSION, _args.data_dir)
+    logging.info("Starting RMT-Debrid v%s (data_dir=%s)", config.APP_VERSION, config.DATA_DIR)
     if getattr(sys, "frozen", False):
         # Frozen (PyInstaller): no importable "main" module on sys.path, so
         # pass the app object directly. Reload is meaningless in a bundle.
