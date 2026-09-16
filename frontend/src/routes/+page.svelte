@@ -5,6 +5,7 @@
 		Clipboard,
 		Tray,
 		Link,
+		Key,
 		CircleNotch,
 		FolderOpen,
 		Pause,
@@ -590,6 +591,23 @@
 		}
 	}
 
+	async function pasteSetupKey() {
+		try {
+			const text = await navigator.clipboard.readText();
+			if (text) {
+				setupKey = text.trim();
+				setupError = '';
+			}
+		} catch {
+			setupError = 'Clipboard access is unavailable.';
+		}
+	}
+
+	function clearSetupKey() {
+		setupKey = '';
+		setupError = '';
+	}
+
 	onMount(() => {
 		request('/api/setup/status')
 			.then((data) => {
@@ -626,38 +644,89 @@
 
 			<div class="page-shell">
 				{#if setupRequired}
-					<div class="console-strip px-3 py-3 sm:px-5 sm:py-4" role="alert">
-						<p class="text-sm font-semibold tracking-tight text-foreground">First-run setup</p>
-						<p class="mt-1 text-[13px] text-muted-foreground">
-						 No Real-Debrid API key is configured. Paste it once — it stays on this machine.
-						</p>
+					<div class="console-strip px-3 py-3 sm:px-5 sm:py-4">
+						<div class="mb-3 flex items-center justify-between gap-3">
+							<p class="text-sm font-semibold tracking-tight text-foreground">First-run setup</p>
+							<span class="shrink-0 font-mono text-[10px] tracking-wide text-muted-foreground"
+								>SETUP</span
+							>
+						</div>
 						<form
-							class="mt-3 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
+							class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center"
 							onsubmit={(e) => {
 								e.preventDefault();
 								submitSetup();
 							}}
 						>
-							<Input
-								bind:value={setupKey}
-								type="password"
-								placeholder="Real-Debrid API key"
-								aria-label="Real-Debrid API key"
-								autocomplete="off"
-								class="h-8 flex-1 font-mono text-[13px]"
-							/>
-							<Input
-								bind:value={setupFolder}
-								placeholder="Download folder (optional)"
-								aria-label="Download folder (optional)"
-								autocomplete="off"
-								class="h-8 flex-1 font-mono text-[13px]"
-							/>
-							<Button type="submit" class="h-8 shrink-0 px-4 text-[13px]" disabled={!setupKey.trim() || setupSaving}>
-								{setupSaving ? 'Saving…' : 'Save'}
+							<div class="relative min-w-0 flex-1">
+								<Key
+									class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
+								/>
+								<Input
+									id="setup-key"
+									bind:value={setupKey}
+									type="password"
+									placeholder="Real-Debrid API key"
+									aria-label="Real-Debrid API key"
+									aria-invalid={!!setupError}
+									aria-describedby="setup-help"
+									autocomplete="off"
+									spellcheck="false"
+									class="h-8 border-transparent bg-transparent pr-20 pl-10 font-mono text-[13px] placeholder:font-sans placeholder:text-[13px]"
+								/>
+								<div class="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-0.5">
+									<button
+										type="button"
+										onclick={pasteSetupKey}
+										aria-label="Paste from clipboard"
+										title="Paste from clipboard"
+										class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+									>
+										<Clipboard class="size-3.5" />
+									</button>
+									{#if setupKey}
+										<button
+											type="button"
+											onclick={clearSetupKey}
+											aria-label="Clear API key"
+											class="grid size-7 cursor-pointer place-items-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+										>
+											<X class="size-3.5" />
+										</button>
+									{/if}
+								</div>
+							</div>
+							<div class="relative min-w-0 flex-1">
+								<FolderOpen
+									class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground"
+								/>
+								<Input
+									id="setup-folder"
+									bind:value={setupFolder}
+									placeholder="Download folder (optional)"
+									aria-label="Download folder (optional)"
+									autocomplete="off"
+									spellcheck="false"
+									class="h-8 border-transparent bg-transparent pl-10 font-mono text-[13px] placeholder:font-sans placeholder:text-[13px]"
+								/>
+							</div>
+							<Button
+								type="submit"
+								class="h-8 w-full shrink-0 px-4 text-[13px] sm:w-auto"
+								disabled={!setupKey.trim() || setupSaving}
+							>
+								{#if setupSaving}<CircleNotch class="size-3.5 animate-spin" />{/if}Save
 							</Button>
 						</form>
-						{#if setupError}<p class="mt-2 text-[13px] text-destructive">{setupError}</p>{/if}
+						<div class="mt-3 flex min-h-4 flex-wrap items-center gap-x-3 gap-y-1">
+							{#if setupError}
+								<p id="setup-help" class="text-[13px] text-destructive" role="alert">{setupError}</p>
+							{:else}
+								<p id="setup-help" class="text-[13px] text-muted-foreground">
+									No Real-Debrid API key is configured, paste it here.
+								</p>
+							{/if}
+						</div>
 					</div>
 				{/if}
 				<div class="page-heading">
