@@ -1097,41 +1097,51 @@
 								</span>
 							</summary>
 							<div class="grid gap-1.5 px-4 pb-4">
-								<label for="setup-webhook" class="text-[13px] leading-none font-medium"
-									>Completion webhook</label
-								>
-								<Input
-									id="setup-webhook"
-									bind:value={setupWebhookUrl}
-									type="url"
-									placeholder="https://ntfy.example.com/downloads"
-									autocomplete="off"
-									spellcheck="false"
-									class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
-								/>
-								<p class="text-xs leading-4 text-muted-foreground">Sent when a download finishes</p>
-								<div class="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1">
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										class="h-7 text-xs"
-										disabled={!setupWebhookUrl.trim() || webhookTesting}
-										onclick={testSetupWebhook}
+								<div class="grid gap-1.5">
+									<label for="setup-webhook" class="text-[13px] leading-none font-medium"
+										>Completion webhook</label
 									>
-										{#if webhookTesting}<CircleNotch class="size-3.5 animate-spin" /> Sending…{:else}Send
-											test{/if}
-									</Button>
-									{#if webhookTest}
-										<p
-											class={webhookTest.ok
-												? 'text-xs text-foreground'
-												: 'text-xs text-destructive'}
-											role={webhookTest.ok ? 'status' : 'alert'}
+									<div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+										<Input
+											id="setup-webhook"
+											bind:value={setupWebhookUrl}
+											type="url"
+											placeholder="https://ntfy.example.com/downloads"
+											autocomplete="off"
+											spellcheck="false"
+											class="h-10 border-transparent bg-muted/60 font-mono text-[13px]"
+										/>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											class="h-7 text-xs"
+											disabled={!setupWebhookUrl.trim() || webhookTesting}
+											onclick={testSetupWebhook}
 										>
-											{webhookTest.message}
-										</p>
-									{/if}
+											{#if webhookTesting}
+												<CircleNotch class="size-3.5 animate-spin" />
+												<span class="sm:hidden">Sending…</span>
+												<span class="hidden sm:inline">Testing…</span>
+											{:else}
+												<span class="sm:hidden">Send test</span>
+												<span class="hidden sm:inline">Test</span>
+											{/if}
+										</Button>
+										{#if webhookTest}
+											<p
+												class={webhookTest.ok
+													? 'text-xs text-foreground'
+													: 'text-xs text-destructive'}
+												role={webhookTest.ok ? 'status' : 'alert'}
+											>
+												{webhookTest.message}
+											</p>
+										{/if}
+									</div>
+									<p class="text-xs leading-4 text-muted-foreground">
+										Sent when a download finishes
+									</p>
 								</div>
 							</div>
 						</details>
@@ -1254,11 +1264,11 @@
 							<p id="link-help" class="text-[13px] text-destructive" role="alert">{formMessage}</p>
 						{:else if linkType === 'invalid'}
 							<p id="link-help" class="text-[13px] text-destructive" role="alert">
-								Enter a valid magnet or http(s) link.
+								Enter a valid magnet or http(s) link
 							</p>
 						{:else}
 							<p id="link-help" class="text-[13px] text-muted-foreground">
-								Sent to Real-Debrid first, then pulled to this machine.
+								Sent to Real-Debrid first, then pulled to this machine
 							</p>
 						{/if}
 					</div>
@@ -1696,11 +1706,6 @@
 							</span>
 							<div class="grid gap-1 pt-0.5">
 								<Dialog.Title>Clear completed?</Dialog.Title>
-								<Dialog.Description
-									>{completedDownloads} completed {completedDownloads === 1
-										? 'download'
-										: 'downloads'} will be removed from the queue. Local files are kept.</Dialog.Description
-								>
 							</div>
 						</div>
 					</Dialog.Header>
@@ -1728,9 +1733,6 @@
 							</span>
 							<div class="grid gap-1 pt-0.5">
 								<Dialog.Title>Cancel download?</Dialog.Title>
-								<Dialog.Description
-									>This stops the download but keeps it in the list.</Dialog.Description
-								>
 							</div>
 						</div>
 					</Dialog.Header>
@@ -1752,9 +1754,6 @@
 			<Dialog.Content showCloseButton={true} class="gap-3 p-4 sm:max-w-[520px]">
 				<Dialog.Header>
 					<Dialog.Title>Select files for {selectionDownload?.name ?? 'torrent'}</Dialog.Title>
-					<Dialog.Description
-						>You must choose at least one file before this torrent can start.</Dialog.Description
-					>
 				</Dialog.Header>
 				<div class="max-h-[55vh] overflow-y-auto">
 					{#if loadingSelection}
@@ -1808,10 +1807,6 @@
 				<div class="px-5 pt-5 pr-12 pb-4">
 					<Dialog.Header>
 						<Dialog.Title>Remove download?</Dialog.Title>
-						<Dialog.Description
-							>The queue entry will be removed. Local files are kept unless you choose to delete
-							them.</Dialog.Description
-						>
 					</Dialog.Header>
 				</div>
 				<div class="px-5 pb-4">

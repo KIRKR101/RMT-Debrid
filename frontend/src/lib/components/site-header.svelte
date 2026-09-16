@@ -23,7 +23,8 @@
 		Check,
 		WarningCircle,
 		List,
-		SignOut
+		SignOut,
+		X
 	} from 'phosphor-svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
@@ -41,6 +42,8 @@
 		max_concurrent_downloads: number;
 		rd_api_key_set: boolean;
 		rd_api_key_hint: string;
+		auth_configured: boolean;
+		app_password_set: boolean;
 		webhook_url: string;
 		webhook_token_set: boolean;
 		webhook_events: string[];
@@ -82,6 +85,8 @@
 		max_concurrent_downloads: 1,
 		rd_api_key_set: false,
 		rd_api_key_hint: '',
+		auth_configured: false,
+		app_password_set: false,
 		webhook_url: '',
 		webhook_token_set: false,
 		webhook_events: ['download.completed'],
@@ -93,6 +98,7 @@
 	});
 
 	let apiKey = $state('');
+	let appPassword = $state('');
 	let webhookToken = $state('');
 	let prowlarrApiKey = $state('');
 	const webhookEventOptions = [
@@ -135,6 +141,7 @@
 	const settingsDirty = $derived(
 		(settingsSnapshot !== '' && settingsSnapshot !== settingsFingerprint()) ||
 			!!apiKey ||
+			!!appPassword ||
 			!!webhookToken ||
 			!!prowlarrApiKey
 	);
@@ -211,6 +218,7 @@
 
 	function openDetails() {
 		apiKey = '';
+		appPassword = '';
 		webhookToken = '';
 		prowlarrApiKey = '';
 		settingsMessage = null;
@@ -218,11 +226,13 @@
 		void fetchSettings();
 	}
 
-	function handleSettingsOpenChange(open: boolean) {
-		if (open) {
-			detailsDialogOpen = true;
-			return;
-		}
+	function protectSettingsDialog(event: Event) {
+		if (!settingsDirty || saving) return;
+		event.preventDefault();
+		discardSettingsDialogOpen = true;
+	}
+
+	function requestSettingsClose() {
 		if (settingsDirty && !saving) {
 			discardSettingsDialogOpen = true;
 			return;
@@ -234,6 +244,7 @@
 		if (settingsBaseline)
 			settings = { ...settingsBaseline, webhook_events: [...settingsBaseline.webhook_events] };
 		apiKey = '';
+		appPassword = '';
 		webhookToken = '';
 		prowlarrApiKey = '';
 		settingsMessage = null;
@@ -251,6 +262,7 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					rd_api_key: apiKey || null,
+					app_password: appPassword || null,
 					download_folder: settings.download_folder,
 					max_concurrent_downloads: Number(settings.max_concurrent_downloads),
 					webhook_url: settings.webhook_url,
@@ -270,6 +282,7 @@
 			};
 			settingsSnapshot = settingsFingerprint();
 			apiKey = '';
+			appPassword = '';
 			webhookToken = '';
 			prowlarrApiKey = '';
 			detailsDialogOpen = false;
@@ -353,7 +366,9 @@
 								>{account.username}</DropdownMenu.Label
 							>
 							<DropdownMenu.Separator />
-							<DropdownMenu.Item onclick={logout}><SignOut class="size-3.5" />Sign out</DropdownMenu.Item>
+							<DropdownMenu.Item onclick={logout}
+								><SignOut class="size-3.5" />Sign out</DropdownMenu.Item
+							>
 						</DropdownMenu.Content>
 					</DropdownMenu.Root>
 				{:else if accountError}
@@ -407,10 +422,16 @@
 							>{account?.username ?? 'RMT-Debrid'}</DropdownMenu.Label
 						>
 						<DropdownMenu.Separator />
-						<DropdownMenu.Item onclick={openStorage}><HardDrives class="size-3.5" />Storage</DropdownMenu.Item>
-						<DropdownMenu.Item onclick={openDetails}><Gear class="size-3.5" />Settings</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={openStorage}
+							><HardDrives class="size-3.5" />Storage</DropdownMenu.Item
+						>
+						<DropdownMenu.Item onclick={openDetails}
+							><Gear class="size-3.5" />Settings</DropdownMenu.Item
+						>
 						<DropdownMenu.Separator />
-						<DropdownMenu.Item onclick={logout}><SignOut class="size-3.5" />Sign out</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={logout}
+							><SignOut class="size-3.5" />Sign out</DropdownMenu.Item
+						>
 					</DropdownMenu.Content>
 				</DropdownMenu.Root>
 			</div>
@@ -433,7 +454,6 @@
 						><ArrowClockwise class={`size-3 ${refreshingStorage ? 'animate-spin' : ''}`} /></Button
 					>
 				</div>
-				<p class="text-xs text-muted-foreground">Disk usage for the download volumes.</p>
 			</Dialog.Header>
 		</div>
 
@@ -524,381 +544,461 @@
 	</Dialog.Content>
 </Dialog.Root>
 
-<Dialog.Root bind:open={detailsDialogOpen} onOpenChange={handleSettingsOpenChange}>
-	<Dialog.Content class="max-h-[75dvh] gap-0 p-0 sm:max-w-[440px]">
-		<div class="border-b border-border px-5 pt-5 pr-14 pb-4 sm:px-6">
-			<Dialog.Header class="gap-1">
-				<Dialog.Title>Settings</Dialog.Title>
-				<p class="text-xs text-muted-foreground">
-					Account, download preferences and notifications.
-				</p>
-			</Dialog.Header>
-		</div>
-
-		<div
-			class="max-h-[calc(75dvh-9rem)] overflow-y-auto px-4 py-4 sm:px-5"
-			aria-busy={settingsLoading}
-		>
-			{#if settingsLoading}
-				<div
-					class="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/30 px-4 py-8 text-[13px] text-muted-foreground"
-					role="status"
-				>
-					<CircleNotch class="size-4 animate-spin" /> Loading latest settings…
+<Dialog.Root bind:open={detailsDialogOpen}>
+	<Dialog.Content
+		class={`max-h-[85dvh] gap-0 p-0 ${discardSettingsDialogOpen ? 'sm:max-w-[420px]' : 'sm:max-w-[680px]'}`}
+		showCloseButton={false}
+		onInteractOutside={protectSettingsDialog}
+		onEscapeKeydown={protectSettingsDialog}
+	>
+		{#if discardSettingsDialogOpen}
+			<div class="grid gap-0">
+				<div class="px-5 pt-5 pr-12 pb-4">
+					<Dialog.Header>
+						<div class="flex items-center gap-3">
+							<span
+								class="grid size-8 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive"
+							>
+								<WarningCircle class="size-4" />
+							</span>
+							<Dialog.Title>Discard unsaved changes?</Dialog.Title>
+						</div>
+					</Dialog.Header>
 				</div>
-			{:else if settingsLoadError}
-				<Alert.Root variant="destructive" class="flex items-center justify-between gap-3">
-					<Alert.Description class="min-w-0 flex-1">{settingsLoadError}</Alert.Description>
+				<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
 					<Button
 						variant="outline"
-						size="xs"
-						class="h-7 shrink-0"
-						onclick={() => void fetchSettings()}>Retry</Button
+						size="sm"
+						class="h-8"
+						onclick={() => (discardSettingsDialogOpen = false)}>Keep editing</Button
 					>
-				</Alert.Root>
-			{:else}
-				<div class="grid gap-6">
-					<section aria-labelledby="settings-account-heading" class="grid gap-2.5">
-						<h3 id="settings-account-heading" class="text-[13px] font-medium text-foreground">
-							Account
-						</h3>
-						{#if account}
-							<dl
-								class="divide-y divide-border overflow-hidden rounded-lg border border-border bg-muted/30 text-[13px] leading-5"
-							>
-								<div class="flex items-center justify-between gap-4 px-4 py-2.5">
-									<dt class="text-muted-foreground">Username</dt>
-									<dd class="min-w-0 truncate font-medium">{account.username}</dd>
-								</div>
-								<div class="flex items-center justify-between gap-4 px-4 py-2.5">
-									<dt class="text-muted-foreground">Plan</dt>
-									<dd class="font-medium capitalize">{account.type}</dd>
-								</div>
-								<div class="flex items-center justify-between gap-4 px-4 py-2.5">
-									<dt class="text-muted-foreground">Expires</dt>
-									<dd class="font-medium tabular-nums">{date(account.expiration)}</dd>
-								</div>
-								<div class="flex items-center justify-between gap-4 px-4 py-2.5">
-									<dt class="text-muted-foreground">Fidelity points</dt>
-									<dd class="font-medium tabular-nums">{account.points.toLocaleString()}</dd>
-								</div>
-							</dl>
-						{:else if accountError}
-							<Alert.Root variant="destructive">
-								<Alert.Description class="text-[13px]"
-									>{accountError}. Check your API key below.</Alert.Description
-								>
-							</Alert.Root>
-						{:else}
-							<div
-								class="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/30 px-4 py-6 text-[13px] text-muted-foreground"
-							>
-								<CircleNotch class="size-4 animate-spin" /> Loading account…
-							</div>
-						{/if}
-					</section>
-
-					<form
-						id="settings-form"
-						aria-labelledby="settings-preferences-heading"
-						class="grid gap-2.5"
-						onsubmit={(e) => {
-							e.preventDefault();
-							saveSettings();
-						}}
+					<Button variant="destructive" size="sm" class="h-8" onclick={discardSettingsChanges}
+						>Discard changes</Button
 					>
-						<h3
-							id="settings-preferences-heading"
-							class="mb-2 text-[13px] font-medium text-foreground"
+				</Dialog.Footer>
+			</div>
+		{:else}
+			<div class="border-b border-border px-5 pt-5 pr-14 pb-4 sm:px-6">
+				<Dialog.Header class="gap-1">
+					<div class="flex items-center justify-between gap-3">
+						<Dialog.Title>Settings</Dialog.Title>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							class="-mr-11 -mt-1 text-muted-foreground hover:text-foreground"
+							onclick={requestSettingsClose}
+							aria-label="Close settings"><X class="size-4" /></Button
 						>
-							Preferences
-						</h3>
-						<div class="grid gap-5">
-							<div class="grid gap-2">
-								<label for="api-key" class="text-[13px] leading-none font-medium"
-									>Real-Debrid API key</label
+					</div>
+				</Dialog.Header>
+			</div>
+
+			<div
+				class="max-h-[calc(85dvh-9rem)] overflow-y-auto px-4 py-5 sm:px-6"
+				aria-busy={settingsLoading}
+			>
+				{#if settingsLoading}
+					<div
+						class="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/30 px-4 py-8 text-[13px] text-muted-foreground"
+						role="status"
+					>
+						<CircleNotch class="size-4 animate-spin" /> Loading latest settings…
+					</div>
+				{:else if settingsLoadError}
+					<Alert.Root variant="destructive" class="flex items-center justify-between gap-3">
+						<Alert.Description class="min-w-0 flex-1">{settingsLoadError}</Alert.Description>
+						<Button
+							variant="outline"
+							size="xs"
+							class="h-7 shrink-0"
+							onclick={() => void fetchSettings()}>Retry</Button
+						>
+					</Alert.Root>
+				{:else}
+					<div class="grid gap-8">
+						<section aria-labelledby="settings-account-heading" class="grid gap-2.5">
+							<h3 id="settings-account-heading" class="text-[13px] font-medium text-foreground">
+								Account
+							</h3>
+							{#if account}
+								<dl
+									class="divide-y divide-border overflow-hidden rounded-lg border border-border bg-muted/30 text-[13px] leading-5"
 								>
-								<Input
-									id="api-key"
-									type="password"
-									bind:value={apiKey}
-									disabled={saving}
-									placeholder="Leave blank to keep current"
-									autocomplete="new-password"
-									aria-describedby="api-key-hint"
-									class="h-8 font-mono text-[13px]"
-								/>
-								<p
-									id="api-key-hint"
-									class="flex items-center gap-1.5 text-xs leading-4 text-muted-foreground"
-								>
-									{#if settings.rd_api_key_set}
-										<span
-											>Key set: <span class="font-mono"
-												>•••{settings.rd_api_key_hint.slice(-4)}</span
-											></span
-										>
-									{:else}
-										<span>No key configured yet</span>
-									{/if}
-								</p>
-							</div>
-							<div class="grid gap-2">
-								<label for="download-folder" class="text-[13px] leading-none font-medium"
-									>Download folder</label
-								>
-								<Input
-									id="download-folder"
-									bind:value={settings.download_folder}
-									disabled={saving}
-									required
-									autocomplete="off"
-									spellcheck="false"
-									placeholder="/downloads"
-									class="h-8 font-mono text-[13px]"
-								/>
-							</div>
-						<div class="grid gap-2">
-							<label for="max-concurrent" class="text-[13px] leading-none font-medium"
-								>Concurrent downloads</label
-							>
-								<Input
-									id="max-concurrent"
-									type="number"
-									min="1"
-									max="20"
-									inputmode="numeric"
-									bind:value={settings.max_concurrent_downloads}
-									disabled={saving}
-									required
-									class="h-8 w-24 tabular-nums"
-								/>
-							<p class="text-xs leading-4 text-muted-foreground">
-								1–20 downloads can run at the same time.
-							</p>
-							{#if settings.config_path}
-								<p class="truncate font-mono text-[11px] text-muted-foreground" title={settings.config_path}>
-									Config: {settings.config_path}
-								</p>
-							{/if}
-						</div>
-							<div class="grid gap-2">
-								<label for="webhook-url" class="text-[13px] leading-none font-medium"
-									>Completion webhook</label
-								>
-								<Input
-									id="webhook-url"
-									bind:value={settings.webhook_url}
-									disabled={saving}
-									type="url"
-									placeholder="https://ntfy.example.com/downloads"
-									autocomplete="off"
-									class="h-8 font-mono text-[13px]"
-								/>
-								<p class="text-xs leading-4 text-muted-foreground">
-									POSTs when a download completes.
-								</p>
-								<div>
-									<Button
-										variant="outline"
-										size="sm"
-										class="h-7 text-xs"
-										disabled={testingWebhook || !settings.webhook_url}
-										onclick={testWebhook}
+									<div class="flex items-center justify-between gap-4 px-4 py-2.5">
+										<dt class="text-muted-foreground">Username</dt>
+										<dd class="min-w-0 truncate font-medium">{account.username}</dd>
+									</div>
+									<div class="flex items-center justify-between gap-4 px-4 py-2.5">
+										<dt class="text-muted-foreground">Plan</dt>
+										<dd class="font-medium capitalize">{account.type}</dd>
+									</div>
+									<div class="flex items-center justify-between gap-4 px-4 py-2.5">
+										<dt class="text-muted-foreground">Expires</dt>
+										<dd class="font-medium tabular-nums">{date(account.expiration)}</dd>
+									</div>
+									<div class="flex items-center justify-between gap-4 px-4 py-2.5">
+										<dt class="text-muted-foreground">Fidelity points</dt>
+										<dd class="font-medium tabular-nums">{account.points.toLocaleString()}</dd>
+									</div>
+								</dl>
+							{:else if accountError}
+								<Alert.Root variant="destructive">
+									<Alert.Description class="text-[13px]"
+										>{accountError}. Check your API key below.</Alert.Description
 									>
-										{testingWebhook ? 'Sending…' : 'Send test'}
-									</Button>
-								</div>
-							</div>
-							<div class="grid gap-2">
-								<label for="webhook-token" class="text-[13px] leading-none font-medium"
-									>Webhook bearer token</label
+								</Alert.Root>
+							{:else}
+								<div
+									class="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/30 px-4 py-6 text-[13px] text-muted-foreground"
 								>
-								<Input
-									id="webhook-token"
-									type="password"
-									bind:value={webhookToken}
-									disabled={saving}
-									placeholder={settings.webhook_token_set
-										? 'Leave blank to keep current'
-										: 'Optional'}
-									autocomplete="new-password"
-									class="h-8 font-mono text-[13px]"
-								/>
-							</div>
-							<fieldset class="grid gap-2">
-								<legend class="pb-2 text-[13px] leading-none font-medium">Notify me about</legend>
-								<div class="grid gap-2 rounded-lg border border-border bg-muted/30 p-3">
-									{#each webhookEventOptions as [event, label]}
-										{@const checked = settings.webhook_events.includes(event)}
-										<button
-											type="button"
-											role="checkbox"
-											aria-checked={checked}
-											disabled={saving}
-											onclick={() => {
-												const events = new Set(settings.webhook_events);
-												if (checked) events.delete(event);
-												else events.add(event);
-												settings.webhook_events = [...events];
-											}}
-											class="flex cursor-pointer items-center gap-2 text-left text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
-										>
-											<Checkbox
-												{checked}
-												tabindex={-1}
-												class="pointer-events-none"
-												aria-hidden="true"
-											/>
-											{label}
-										</button>
-									{/each}
+									<CircleNotch class="size-4 animate-spin" /> Loading account…
 								</div>
-								<p class="text-xs leading-4 text-muted-foreground">
-									Leave all unchecked to disable notifications.
-								</p>
-							</fieldset>
-							<fieldset class="grid gap-2">
-								<legend class="pb-2 text-[13px] leading-none font-medium">Discover</legend>
-								<div class="grid gap-5">
+							{/if}
+						</section>
+
+						<form
+							id="settings-form"
+							aria-labelledby="settings-preferences-heading"
+							class="grid gap-3"
+							onsubmit={(e) => {
+								e.preventDefault();
+								saveSettings();
+							}}
+						>
+							<h3
+								id="settings-preferences-heading"
+								class="mb-2 text-[13px] font-medium text-foreground"
+							>
+								Configuration
+							</h3>
+							<div class="grid gap-7">
+								<section
+									class="grid gap-4 border-t border-border pt-5"
+									aria-labelledby="settings-access-heading"
+								>
+									<h4
+										id="settings-access-heading"
+										class="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+									>
+										Access
+									</h4>
 									<div class="grid gap-2">
-										<label for="prowlarr-url" class="text-[13px] leading-none font-medium"
-											>Prowlarr URL</label
+										<label for="api-key" class="text-[13px] leading-none font-medium"
+											>Real-Debrid API key</label
 										>
 										<Input
-											id="prowlarr-url"
-											bind:value={settings.prowlarr_url}
+											id="api-key"
+											type="password"
+											bind:value={apiKey}
 											disabled={saving}
-											type="url"
-											placeholder="http://localhost:9696"
-											autocomplete="off"
+											placeholder="Leave blank to keep current"
+											autocomplete="new-password"
+											aria-describedby="api-key-hint"
 											class="h-8 font-mono text-[13px]"
 										/>
+										<p
+											id="api-key-hint"
+											class="flex items-center gap-1.5 text-xs leading-4 text-muted-foreground"
+										>
+											{#if settings.rd_api_key_set}
+												<span
+													>Key set: <span class="font-mono"
+														>•••{settings.rd_api_key_hint.slice(-4)}</span
+													></span
+												>
+											{:else}
+												<span>No key configured yet</span>
+											{/if}
+										</p>
 									</div>
 									<div class="grid gap-2">
-										<label for="prowlarr-key" class="text-[13px] leading-none font-medium"
-											>Prowlarr API key</label
+										<label for="app-password" class="text-[13px] leading-none font-medium"
+											>Password</label
 										>
 										<Input
-											id="prowlarr-key"
+											id="app-password"
 											type="password"
-											bind:value={prowlarrApiKey}
+											bind:value={appPassword}
 											disabled={saving}
-											placeholder={settings.prowlarr_api_key_set
+											placeholder={settings.app_password_set
 												? 'Leave blank to keep current'
 												: 'Optional'}
 											autocomplete="new-password"
-											class="h-8 font-mono text-[13px]"
+											class="h-9 font-mono text-[13px]"
 										/>
 									</div>
-									<div class="grid gap-2">
-										<label for="prowlarr-limit" class="text-[13px] leading-none font-medium"
-											>Prowlarr result limit</label
-										>
-										<Input
-											id="prowlarr-limit"
-											type="number"
-											min="1"
-											max="500"
-											inputmode="numeric"
-											bind:value={settings.prowlarr_result_limit}
-											disabled={saving}
-											class="h-8 w-24 tabular-nums"
-										/>
+								</section>
+								<section
+									class="grid gap-4 border-t border-border pt-5"
+									aria-labelledby="settings-downloads-heading"
+								>
+									<h4
+										id="settings-downloads-heading"
+										class="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+									>
+										Downloads
+									</h4>
+									<div class="grid gap-5 sm:grid-cols-[minmax(0,4fr)_minmax(8rem,1fr)]">
+										<div class="grid gap-2">
+											<label for="download-folder" class="text-[13px] leading-none font-medium"
+												>Download folder</label
+											>
+											<Input
+												id="download-folder"
+												bind:value={settings.download_folder}
+												disabled={saving}
+												required
+												autocomplete="off"
+												spellcheck="false"
+												placeholder="/downloads"
+												class="h-8 font-mono text-[13px]"
+											/>
+										</div>
+										<div class="grid gap-2">
+											<label for="max-concurrent" class="text-[13px] leading-none font-medium"
+												>Concurrent</label
+											>
+											<Input
+												id="max-concurrent"
+												type="number"
+												min="1"
+												max="20"
+												inputmode="numeric"
+												bind:value={settings.max_concurrent_downloads}
+												disabled={saving}
+												required
+												class="h-8 w-24 tabular-nums"
+											/>
+										</div>
 									</div>
-									<div class="grid gap-2">
-										<label for="torrentio-url" class="text-[13px] leading-none font-medium"
-											>Torrentio URL</label
-										>
-										<Input
-											id="torrentio-url"
-											bind:value={settings.torrentio_url}
-											disabled={saving}
-											type="url"
-											placeholder="https://torrentio.strem.fun"
-											autocomplete="off"
-											class="h-8 font-mono text-[13px]"
-										/>
+								</section>
+								<section
+									class="grid gap-4 border-t border-border pt-5"
+									aria-labelledby="settings-webhooks-heading"
+								>
+									<h4
+										id="settings-webhooks-heading"
+										class="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+									>
+										Webhooks
+									</h4>
+									<div class="grid gap-5">
+										<div class="grid gap-1.5">
+											<label for="webhook-url" class="text-[13px] leading-none font-medium"
+												>Completion webhook</label
+											>
+											<div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+												<Input
+													id="webhook-url"
+													bind:value={settings.webhook_url}
+													disabled={saving}
+													type="url"
+													placeholder="https://ntfy.example.com/downloads"
+													autocomplete="off"
+													class="h-8 font-mono text-[13px]"
+												/>
+												<Button
+													variant="outline"
+													size="sm"
+													class="h-7 text-xs"
+													disabled={testingWebhook || !settings.webhook_url}
+													onclick={testWebhook}
+												>
+													{#if testingWebhook}
+														<span class="sm:hidden">Sending…</span>
+														<span class="hidden sm:inline">Testing…</span>
+													{:else}
+														<span class="sm:hidden">Send test</span>
+														<span class="hidden sm:inline">Test</span>
+													{/if}
+												</Button>
+											</div>
+											<p class="text-xs leading-4 text-muted-foreground">
+												POSTs when a download completes
+											</p>
+										</div>
+										<div class="grid gap-2">
+											<label for="webhook-token" class="text-[13px] leading-none font-medium"
+												>Webhook bearer token</label
+											>
+											<Input
+												id="webhook-token"
+												type="password"
+												bind:value={webhookToken}
+												disabled={saving}
+												placeholder={settings.webhook_token_set
+													? 'Leave blank to keep current'
+													: 'Optional'}
+												autocomplete="new-password"
+												class="h-8 font-mono text-[13px]"
+											/>
+										</div>
+										<fieldset class="grid gap-2">
+											<legend class="pb-2 text-[13px] leading-none font-medium"
+												>Notify me about</legend
+											>
+											<div class="grid gap-2 rounded-lg border border-border bg-muted/30 p-3">
+												{#each webhookEventOptions as [event, label]}
+													{@const checked = settings.webhook_events.includes(event)}
+													<button
+														type="button"
+														role="checkbox"
+														aria-checked={checked}
+														disabled={saving}
+														onclick={() => {
+															const events = new Set(settings.webhook_events);
+															if (checked) events.delete(event);
+															else events.add(event);
+															settings.webhook_events = [...events];
+														}}
+														class="flex cursor-pointer items-center gap-2 text-left text-[13px] disabled:cursor-not-allowed disabled:opacity-50"
+													>
+														<Checkbox
+															{checked}
+															tabindex={-1}
+															class="pointer-events-none"
+															aria-hidden="true"
+														/>
+														{label}
+													</button>
+												{/each}
+											</div>
+											<p class="text-xs leading-4 text-muted-foreground">
+												Leave all unchecked to disable notifications
+											</p>
+										</fieldset>
 									</div>
-									<div class="grid gap-2">
-										<label for="torrentio-filter" class="text-[13px] leading-none font-medium"
-											>Torrentio filter</label
-										>
-										<Input
-											id="torrentio-filter"
-											bind:value={settings.torrentio_filter}
-											disabled={saving}
-											placeholder="sort=qualitysize|…"
-											autocomplete="off"
-											class="h-8 font-mono text-[13px]"
-										/>
-									</div>
-								</div>
-							</fieldset>
-						</div>
-					</form>
-				</div>
-			{/if}
-		</div>
-
-		<div class="flex min-h-12 items-center gap-3 border-t border-border bg-muted/30 px-4 py-3">
-			<div class="min-w-0 flex-1">
-				{#if settingsMessage}
-					<p
-						class="flex items-center gap-1.5 text-xs leading-4 {settingsMessage.type === 'success'
-							? 'text-success'
-							: 'text-destructive'}"
-						role={settingsMessage.type === 'error' ? 'alert' : 'status'}
-						aria-live={settingsMessage.type === 'error' ? 'assertive' : 'polite'}
-					>
-						{#if settingsMessage.type === 'success'}
-							<Check class="size-3.5 shrink-0" />
-						{:else}
-							<WarningCircle class="size-3.5 shrink-0" />
-						{/if}
-						<span class="truncate">{settingsMessage.text}</span>
-					</p>
+								</section>
+								<section
+									class="grid gap-4 border-t border-border pt-5"
+									aria-labelledby="settings-discovery-heading"
+								>
+									<h4
+										id="settings-discovery-heading"
+										class="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground"
+									>
+										Discovery
+									</h4>
+									<fieldset class="grid gap-2">
+										<legend class="sr-only">Discovery providers</legend>
+										<div class="grid gap-5">
+											<div class="grid gap-2">
+												<label for="prowlarr-url" class="text-[13px] leading-none font-medium"
+													>Prowlarr URL</label
+												>
+												<Input
+													id="prowlarr-url"
+													bind:value={settings.prowlarr_url}
+													disabled={saving}
+													type="url"
+													placeholder="http://localhost:9696"
+													autocomplete="off"
+													class="h-8 font-mono text-[13px]"
+												/>
+											</div>
+											<div class="grid gap-2">
+												<label for="prowlarr-key" class="text-[13px] leading-none font-medium"
+													>Prowlarr API key</label
+												>
+												<Input
+													id="prowlarr-key"
+													type="password"
+													bind:value={prowlarrApiKey}
+													disabled={saving}
+													placeholder={settings.prowlarr_api_key_set
+														? 'Leave blank to keep current'
+														: 'Optional'}
+													autocomplete="new-password"
+													class="h-8 font-mono text-[13px]"
+												/>
+											</div>
+											<div class="grid gap-2">
+												<label for="prowlarr-limit" class="text-[13px] leading-none font-medium"
+													>Prowlarr result limit</label
+												>
+												<Input
+													id="prowlarr-limit"
+													type="number"
+													min="1"
+													max="500"
+													inputmode="numeric"
+													bind:value={settings.prowlarr_result_limit}
+													disabled={saving}
+													class="h-8 w-24 tabular-nums"
+												/>
+											</div>
+											<div class="grid gap-2">
+												<label for="torrentio-url" class="text-[13px] leading-none font-medium"
+													>Torrentio URL</label
+												>
+												<Input
+													id="torrentio-url"
+													bind:value={settings.torrentio_url}
+													disabled={saving}
+													type="url"
+													placeholder="https://torrentio.strem.fun"
+													autocomplete="off"
+													class="h-8 font-mono text-[13px]"
+												/>
+											</div>
+											<div class="grid gap-2">
+												<label for="torrentio-filter" class="text-[13px] leading-none font-medium"
+													>Torrentio filter</label
+												>
+												<Input
+													id="torrentio-filter"
+													bind:value={settings.torrentio_filter}
+													disabled={saving}
+													placeholder="sort=qualitysize|…"
+													autocomplete="off"
+													class="h-8 font-mono text-[13px]"
+												/>
+											</div>
+										</div>
+									</fieldset>
+								</section>
+							</div>
+						</form>
+					</div>
 				{/if}
 			</div>
-			<div class="flex shrink-0 items-center gap-2">
-				<Dialog.Close>
-					{#snippet child({ props })}
-						<Button variant="outline" size="sm" class="h-8" {...props}>Cancel</Button>
-					{/snippet}
-				</Dialog.Close>
-				<Button
-					type="submit"
-					form="settings-form"
-					size="sm"
-					class="h-8 min-w-28"
-					disabled={saving || settingsLoading || !!settingsLoadError || !settingsDirty}
-				>
-					{#if saving}<CircleNotch class="size-3.5 animate-spin" /> Saving…{:else}<FloppyDisk
-							class="size-3.5"
-						/> Save changes{/if}
-				</Button>
-			</div>
-		</div>
-	</Dialog.Content>
-</Dialog.Root>
 
-<Dialog.Root bind:open={discardSettingsDialogOpen}>
-	<Dialog.Content class="sm:max-w-[380px]">
-		<div class="px-5 pt-5 pr-12 pb-4">
-			<Dialog.Header>
-				<Dialog.Title>Discard unsaved changes?</Dialog.Title>
-				<Dialog.Description>Your settings have changed but have not been saved.</Dialog.Description>
-			</Dialog.Header>
-		</div>
-		<Dialog.Footer class="border-t border-border/60 bg-muted/20 px-5 py-3.5">
-			<Dialog.Close>
-				{#snippet child({ props })}
-					<Button variant="outline" size="sm" class="h-8" {...props}>Keep editing</Button>
-				{/snippet}
-			</Dialog.Close>
-			<Button variant="destructive" size="sm" class="h-8" onclick={discardSettingsChanges}
-				>Discard changes</Button
-			>
-		</Dialog.Footer>
+			<div class="flex min-h-12 items-center gap-3 border-t border-border bg-muted/30 px-4 py-3">
+				<div class="min-w-0 flex-1">
+					{#if settingsMessage}
+						<p
+							class="flex items-center gap-1.5 text-xs leading-4 {settingsMessage.type === 'success'
+								? 'text-success'
+								: 'text-destructive'}"
+							role={settingsMessage.type === 'error' ? 'alert' : 'status'}
+							aria-live={settingsMessage.type === 'error' ? 'assertive' : 'polite'}
+						>
+							{#if settingsMessage.type === 'success'}
+								<Check class="size-3.5 shrink-0" />
+							{:else}
+								<WarningCircle class="size-3.5 shrink-0" />
+							{/if}
+							<span class="truncate">{settingsMessage.text}</span>
+						</p>
+					{/if}
+				</div>
+				<div class="flex shrink-0 items-center gap-2">
+					<Button variant="outline" size="sm" class="h-8" onclick={requestSettingsClose}
+						>Cancel</Button
+					>
+					<Button
+						type="submit"
+						form="settings-form"
+						size="sm"
+						class="h-8 min-w-28"
+						disabled={saving || settingsLoading || !!settingsLoadError || !settingsDirty}
+					>
+						{#if saving}<CircleNotch class="size-3.5 animate-spin" /> Saving…{:else}<FloppyDisk
+								class="size-3.5"
+							/> Save changes{/if}
+					</Button>
+				</div>
+			</div>
+		{/if}
 	</Dialog.Content>
 </Dialog.Root>

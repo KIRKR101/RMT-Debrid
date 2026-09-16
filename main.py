@@ -315,6 +315,7 @@ def volume_mountpoints() -> List[str]:
 
 class SettingsUpdate(BaseModel):
     rd_api_key: Optional[str] = Field(default=None, max_length=256)
+    app_password: Optional[str] = Field(default=None, max_length=256)
     download_folder: Optional[str] = Field(default=None, max_length=1024)
     max_concurrent_downloads: Optional[int] = Field(default=None, ge=1, le=20)
     webhook_url: Optional[str] = Field(default=None, max_length=2048)
@@ -1050,6 +1051,7 @@ async def update_settings(settings: SettingsUpdate, auth=Depends(verify_api_key)
     try:
         result = config.update_settings(
             rd_api_key=settings.rd_api_key,
+            app_password=settings.app_password,
             download_folder=settings.download_folder,
             max_concurrent_downloads=settings.max_concurrent_downloads,
             webhook_url=settings.webhook_url,
