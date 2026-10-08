@@ -197,18 +197,36 @@ def _setting(canonical: str, default=None):
     return value if value not in (None, "") else default
 
 
+def _safe_int(value, default: int, label: str) -> int:
+    """Parse an int without crashing boot on bad env/file values."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default %r", label, value, default)
+        return default
+
+
+def _safe_float(value, default: float, label: str) -> float:
+    """Parse a float without crashing boot on bad env values."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default %r", label, value, default)
+        return default
+
+
 RD_API_KEY = _setting("rd_api_key")
 DOWNLOAD_FOLDER = _setting("download_folder", str(DATA_DIR / "downloads"))
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
-SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
+SERVER_PORT = _safe_int(os.getenv("SERVER_PORT", 8000), 8000, "SERVER_PORT")
 RELOAD = os.getenv("RELOAD", "False").lower() == "true"
-MAX_CONCURRENT_DOWNLOADS = int(_setting("max_concurrent", "3"))
+MAX_CONCURRENT_DOWNLOADS = _safe_int(_setting("max_concurrent", "3"), 3, "MAX_CONCURRENT_DOWNLOADS")
 WEBHOOK_URL = _setting("webhook_url", "")
 WEBHOOK_TOKEN = _setting("webhook_token", "")
 WEBHOOK_EVENTS = _webhook_events(_setting("webhook_events", "download.completed"))
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", str(1024 * 1024)))  # 1MB default, tunable for NAS/SSD
-MAX_MBPS = float(os.getenv("MAX_MBPS", "0") or 0)  # 0 = unlimited global local-download cap
-MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)))  # pause/fail below 1 GiB free
+CHUNK_SIZE = _safe_int(os.getenv("CHUNK_SIZE", str(1024 * 1024)), 1024 * 1024, "CHUNK_SIZE")  # 1MB default, tunable for NAS/SSD
+MAX_MBPS = _safe_float(os.getenv("MAX_MBPS", "0") or 0, 0, "MAX_MBPS")  # 0 = unlimited global local-download cap
+MIN_FREE_BYTES = _safe_int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)), 1024 * 1024 * 1024, "MIN_FREE_BYTES")  # pause/fail below 1 GiB free
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 APP_VERSION = os.getenv("RMT_VERSION", os.getenv("APP_VERSION", "dev"))
 TORRENTIO_URL = _setting("torrentio_url", "https://torrentio.strem.fun")
@@ -232,8 +250,12 @@ RD_CONFIGURED = bool(RD_API_KEY)
 if not DOWNLOAD_FOLDER:
     DOWNLOAD_FOLDER = str(DATA_DIR / "downloads")
 
-# Ensure download folder exists
-os.makedirs(os.path.expanduser(DOWNLOAD_FOLDER), exist_ok=True)
+# Ensure download folder exists (best effort: an unwritable volume must not
+# prevent boot; the setup wizard and disk guards surface it at runtime).
+try:
+    os.makedirs(os.path.expanduser(DOWNLOAD_FOLDER), exist_ok=True)
+except OSError as exc:
+    logging.warning("Could not create download folder %r: %s", DOWNLOAD_FOLDER, exc)
 
 
 def is_configured() -> bool:
