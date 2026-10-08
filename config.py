@@ -238,7 +238,7 @@ def public_settings():
         "webhook_token_set": bool(WEBHOOK_TOKEN),
         "webhook_events": WEBHOOK_EVENTS,
         "auth_configured": bool(APP_PASSWORD),
-        "app_password_set": bool(_saved.get("app_password")),
+        "app_password_set": bool(APP_PASSWORD),
         "torrentio_configured": bool(TORRENTIO_URL),
         "torrentio_url": TORRENTIO_URL,
         "torrentio_filter": TORRENTIO_FILTER,
@@ -283,7 +283,8 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     new_webhook_token = WEBHOOK_TOKEN if webhook_token is None else webhook_token.strip()
     new_webhook_events = WEBHOOK_EVENTS if webhook_events is None else _webhook_events(webhook_events)
     new_password = _saved.get("app_password", "")
-    if app_password is not None and app_password.strip():
+    if app_password is not None:
+        # Empty string clears the stored password; None means "no change".
         new_password = app_password.strip()
     new_prowlarr_url = PROWLARR_URL if prowlarr_url is None else prowlarr_url.strip()
     if new_prowlarr_url:
@@ -309,6 +310,8 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
     RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS = new_token, str(Path(new_folder).expanduser()), concurrency
     WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS = new_webhook_url, new_webhook_token, new_webhook_events
     APP_PASSWORD = _setting("app_password") or API_KEY
+    if app_password is not None and (os.getenv("APP_PASSWORD") or API_KEY):
+        logging.warning("APP_PASSWORD is provided via environment; the stored file value is ignored while env is set.")
     PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_RESULT_LIMIT = new_prowlarr_url, new_prowlarr_key, new_prowlarr_limit
     TORRENTIO_URL, TORRENTIO_FILTER = new_torrentio_url, new_torrentio_filter
     return public_settings()
