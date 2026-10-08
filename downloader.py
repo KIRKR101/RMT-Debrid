@@ -291,7 +291,7 @@ class DownloadManager:
             task.status = "paused"
             task.speed_mbps = 0
             save_task(task)
-            await self.broadcast_update(task)
+            await self.broadcast_update(task, force=True)
             await self.notify_webhook("download.paused", task)
 
     async def resume_task(self, task_id: str):
@@ -309,7 +309,7 @@ class DownloadManager:
                 runtime.resume_event.set()
                 await self.start_task(task_id)
                 save_task(task)
-                await self.broadcast_update(task)
+                await self.broadcast_update(task, force=True)
                 return
 
             # A paused task has no live worker after an application restart.
@@ -325,6 +325,7 @@ class DownloadManager:
                 task.status = "pending"
                 task.error_message = None
                 save_task(task)
+                await self.broadcast_update(task, force=True)
                 await self.start_task(task_id)
                 return
 
@@ -359,7 +360,7 @@ class DownloadManager:
         task.error_message = None
         task.error_code = None
         save_task(task)
-        await self.broadcast_update(task)
+        await self.broadcast_update(task, force=True)
         return True
 
     async def cleanup_remote(self, task_id: str) -> Optional[str]:
@@ -734,14 +735,14 @@ class DownloadManager:
                         if not runtime.resume_event.is_set():
                             task.status = "paused"
                             task.speed_mbps = 0
-                            await self.broadcast_update(task)
+                            await self.broadcast_update(task, force=True)
                             await runtime.resume_event.wait()
                             task.status = "downloading"
                             runtime.last_update_time = time.time()
                             if runtime.resume_requested:
                                 runtime.resume_requested = False
                                 await self.notify_webhook("download.resumed", task)
-                            await self.broadcast_update(task)
+                            await self.broadcast_update(task, force=True)
 
                         # Cancel Check
                         if runtime.cancel_event.is_set():
