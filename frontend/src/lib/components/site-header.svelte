@@ -993,9 +993,9 @@
 						class="h-8 min-w-28"
 						disabled={saving || settingsLoading || !!settingsLoadError || !settingsDirty}
 					>
-						{#if saving}<CircleNotch class="size-3.5 animate-spin" /> Saving…{:else}<FloppyDisk
-								class="size-3.5"
-							/> Save changes{/if}
+						{#if saving}<CircleNotch class="size-3.5 animate-spin" /> Saving…{:else}
+						    Save changes
+						{/if}
 					</Button>
 				</div>
 			</div>
