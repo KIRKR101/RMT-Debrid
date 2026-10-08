@@ -578,19 +578,19 @@
 				</Dialog.Footer>
 			</div>
 		{:else}
-			<div class="border-b border-border px-5 pt-5 pr-14 pb-4 sm:px-6">
-				<Dialog.Header class="gap-1">
-					<div class="flex items-center justify-between gap-3">
+			<div class="relative border-b border-border px-5 pt-5 pb-4 sm:px-6">
+				<Dialog.Header class="gap-1 pr-10">
+					<div class="flex items-center gap-3">
 						<Dialog.Title>Settings</Dialog.Title>
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							class="-mr-11 -mt-1 text-muted-foreground hover:text-foreground"
-							onclick={requestSettingsClose}
-							aria-label="Close settings"><X class="size-4" /></Button
-						>
 					</div>
 				</Dialog.Header>
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					class="absolute top-3 right-3 shrink-0 text-muted-foreground hover:text-foreground"
+					onclick={requestSettingsClose}
+					aria-label="Close settings"><X class="size-4" /></Button
+				>
 			</div>
 
 			<div
