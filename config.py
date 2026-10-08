@@ -25,7 +25,7 @@ def _webhook_events(value):
 # --- Configuration & Setup ---
 # For frozen binaries, also load .env next to the exe and inside the data dir,
 # so binary-only users can configure via files without a shell env.
-# Precedence (OS env always wins): exe-dir/.env < data-dir/.env < cwd/.env
+# Precedence (OS env always wins): cwd/.env < exe-dir/.env < data-dir/.env
 def _load_env_files():
     # Precedence (highest wins): OS env > data-dir/.env > exe-dir/.env > cwd/.env
     import copy as _copy
