@@ -130,7 +130,9 @@ class DownloadManager:
         async with self.bandwidth_lock:
             if self.bandwidth_tokens <= 0:
                 self.bandwidth_tokens = capacity
-            while True:
+                self.bandwidth_last_refill = time.monotonic()
+        while True:
+            async with self.bandwidth_lock:
                 now = time.monotonic()
                 elapsed = now - self.bandwidth_last_refill
                 self.bandwidth_last_refill = now
@@ -138,7 +140,8 @@ class DownloadManager:
                 if self.bandwidth_tokens >= byte_count:
                     self.bandwidth_tokens -= byte_count
                     return
-                await asyncio.sleep((byte_count - self.bandwidth_tokens) / rate)
+                wait = (byte_count - self.bandwidth_tokens) / rate
+            await asyncio.sleep(wait)
 
     def save_task_coalesced(self, task: DownloadTask, force: bool = False) -> None:
         """Reduce SQLite write amplification: persist at most every few seconds."""
@@ -288,7 +291,7 @@ class DownloadManager:
             task.status = "paused"
             task.speed_mbps = 0
             save_task(task)
-            await self.broadcast_update(task)
+            await self.broadcast_update(task, force=True)
             await self.notify_webhook("download.paused", task)
 
     async def resume_task(self, task_id: str):
@@ -306,7 +309,7 @@ class DownloadManager:
                 runtime.resume_event.set()
                 await self.start_task(task_id)
                 save_task(task)
-                await self.broadcast_update(task)
+                await self.broadcast_update(task, force=True)
                 return
 
             # A paused task has no live worker after an application restart.
@@ -322,6 +325,7 @@ class DownloadManager:
                 task.status = "pending"
                 task.error_message = None
                 save_task(task)
+                await self.broadcast_update(task, force=True)
                 await self.start_task(task_id)
                 return
 
@@ -356,7 +360,7 @@ class DownloadManager:
         task.error_message = None
         task.error_code = None
         save_task(task)
-        await self.broadcast_update(task)
+        await self.broadcast_update(task, force=True)
         return True
 
     async def cleanup_remote(self, task_id: str) -> Optional[str]:
@@ -731,14 +735,14 @@ class DownloadManager:
                         if not runtime.resume_event.is_set():
                             task.status = "paused"
                             task.speed_mbps = 0
-                            await self.broadcast_update(task)
+                            await self.broadcast_update(task, force=True)
                             await runtime.resume_event.wait()
                             task.status = "downloading"
                             runtime.last_update_time = time.time()
                             if runtime.resume_requested:
                                 runtime.resume_requested = False
                                 await self.notify_webhook("download.resumed", task)
-                            await self.broadcast_update(task)
+                            await self.broadcast_update(task, force=True)
 
                         # Cancel Check
                         if runtime.cancel_event.is_set():

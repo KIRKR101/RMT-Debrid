@@ -85,7 +85,12 @@ def backup_db(keep: int = 7) -> Optional[str]:
             return None
         backup_dir = os.path.join(str(DATA_DIR), "backups")
         os.makedirs(backup_dir, exist_ok=True)
-        dest = os.path.join(backup_dir, f"downloads-{time.strftime('%Y%m%d-%H%M%S')}.db")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(backup_dir, f"downloads-{stamp}-{os.getpid()}.db")
+        counter = 1
+        while os.path.exists(dest):
+            counter += 1
+            dest = os.path.join(backup_dir, f"downloads-{stamp}-{os.getpid()}-{counter}.db")
         shutil.copy2(src, dest)
         existing = sorted(
             f for f in os.listdir(backup_dir) if f.startswith("downloads-") and f.endswith(".db")

@@ -1399,7 +1399,7 @@
 							<EmptyState
 								icon={Tray}
 								title="Queue is empty"
-								hint="Paste a link above. It will show up here with live progress."
+								hint="Paste a link above. It will show up here."
 							/>
 						{:else if filteredDownloads.length === 0}
 							<EmptyState
@@ -1838,9 +1838,6 @@
 {:else if authChecked}
 	<main class="grid min-h-dvh place-items-center bg-background px-4 py-12 text-foreground sm:py-16">
 		<div class="w-full max-w-sm">
-			<div class="mb-8 px-1">
-				<span class="text-xs font-medium tracking-normal text-muted-foreground">RMT-Debrid</span>
-			</div>
 			<div class="ledger p-5 sm:p-6">
 				<h1 class="text-lg font-semibold tracking-tight">Sign in</h1>
 				<p class="mt-1 text-[13px] text-muted-foreground">

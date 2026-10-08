@@ -25,7 +25,7 @@ def _webhook_events(value):
 # --- Configuration & Setup ---
 # For frozen binaries, also load .env next to the exe and inside the data dir,
 # so binary-only users can configure via files without a shell env.
-# Precedence (OS env always wins): exe-dir/.env < data-dir/.env < cwd/.env
+# Precedence (OS env always wins): cwd/.env < exe-dir/.env < data-dir/.env
 def _load_env_files():
     # Precedence (highest wins): OS env > data-dir/.env > exe-dir/.env > cwd/.env
     import copy as _copy
@@ -106,7 +106,22 @@ def _resolve_config_path() -> Path:
         override = os.getenv(variable)
         if override:
             path = Path(override).expanduser()
-            return path if path.suffix.lower() == ".toml" else path.with_suffix(".toml")
+            if path.suffix.lower() != ".toml":
+                target = path.with_suffix(".toml")
+                logging.warning(
+                    "%s points to %s; using %s instead (TOML only)",
+                    variable, path, target,
+                )
+                try:
+                    if path.is_file():
+                        logging.warning(
+                            "Existing %s will not be read; migrate its values to %s",
+                            path, target,
+                        )
+                except OSError:
+                    pass
+                return target
+            return path
     try:
         from paths import exe_dir, is_frozen
 
@@ -182,18 +197,36 @@ def _setting(canonical: str, default=None):
     return value if value not in (None, "") else default
 
 
+def _safe_int(value, default: int, label: str) -> int:
+    """Parse an int without crashing boot on bad env/file values."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default %r", label, value, default)
+        return default
+
+
+def _safe_float(value, default: float, label: str) -> float:
+    """Parse a float without crashing boot on bad env values."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid %s=%r; using default %r", label, value, default)
+        return default
+
+
 RD_API_KEY = _setting("rd_api_key")
 DOWNLOAD_FOLDER = _setting("download_folder", str(DATA_DIR / "downloads"))
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
-SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
+SERVER_PORT = _safe_int(os.getenv("SERVER_PORT", 8000), 8000, "SERVER_PORT")
 RELOAD = os.getenv("RELOAD", "False").lower() == "true"
-MAX_CONCURRENT_DOWNLOADS = int(_setting("max_concurrent", "3"))
+MAX_CONCURRENT_DOWNLOADS = _safe_int(_setting("max_concurrent", "3"), 3, "MAX_CONCURRENT_DOWNLOADS")
 WEBHOOK_URL = _setting("webhook_url", "")
 WEBHOOK_TOKEN = _setting("webhook_token", "")
 WEBHOOK_EVENTS = _webhook_events(_setting("webhook_events", "download.completed"))
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", str(1024 * 1024)))  # 1MB default, tunable for NAS/SSD
-MAX_MBPS = float(os.getenv("MAX_MBPS", "0") or 0)  # 0 = unlimited global local-download cap
-MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)))  # pause/fail below 1 GiB free
+CHUNK_SIZE = _safe_int(os.getenv("CHUNK_SIZE", str(1024 * 1024)), 1024 * 1024, "CHUNK_SIZE")  # 1MB default, tunable for NAS/SSD
+MAX_MBPS = _safe_float(os.getenv("MAX_MBPS", "0") or 0, 0, "MAX_MBPS")  # 0 = unlimited global local-download cap
+MIN_FREE_BYTES = _safe_int(os.getenv("MIN_FREE_BYTES", str(1024 * 1024 * 1024)), 1024 * 1024 * 1024, "MIN_FREE_BYTES")  # pause/fail below 1 GiB free
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 APP_VERSION = os.getenv("RMT_VERSION", os.getenv("APP_VERSION", "dev"))
 TORRENTIO_URL = _setting("torrentio_url", "https://torrentio.strem.fun")
@@ -217,8 +250,12 @@ RD_CONFIGURED = bool(RD_API_KEY)
 if not DOWNLOAD_FOLDER:
     DOWNLOAD_FOLDER = str(DATA_DIR / "downloads")
 
-# Ensure download folder exists
-os.makedirs(os.path.expanduser(DOWNLOAD_FOLDER), exist_ok=True)
+# Ensure download folder exists (best effort: an unwritable volume must not
+# prevent boot; the setup wizard and disk guards surface it at runtime).
+try:
+    os.makedirs(os.path.expanduser(DOWNLOAD_FOLDER), exist_ok=True)
+except OSError as exc:
+    logging.warning("Could not create download folder %r: %s", DOWNLOAD_FOLDER, exc)
 
 
 def is_configured() -> bool:
@@ -238,7 +275,7 @@ def public_settings():
         "webhook_token_set": bool(WEBHOOK_TOKEN),
         "webhook_events": WEBHOOK_EVENTS,
         "auth_configured": bool(APP_PASSWORD),
-        "app_password_set": bool(_saved.get("app_password")),
+        "app_password_set": bool(APP_PASSWORD),
         "torrentio_configured": bool(TORRENTIO_URL),
         "torrentio_url": TORRENTIO_URL,
         "torrentio_filter": TORRENTIO_FILTER,
@@ -254,7 +291,22 @@ def public_settings():
     }
 
 
+def _env_value(canonical: str):
+    """Return the environment-provided value for a canonical key, if any."""
+    for env_name in (canonical.upper(), *_CANONICAL_KEYS.get(canonical, ())):
+        env_value = os.getenv(env_name)
+        if env_value not in (None, ""):
+            return env_value
+    return None
+
+
 def _validate_http_url(value: str, label: str) -> str:
+    """Scheme/host validation for stored URLs (authenticated settings path).
+
+    Deliberately scheme-only: stored webhook/Prowlarr/Torrentio URLs often
+    target homelab LAN hosts. Pre-auth SSRF protection lives in
+    main._validate_setup_webhook_destination.
+    """
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{label} must use HTTP or HTTPS")
@@ -265,52 +317,92 @@ def update_settings(*, rd_api_key=None, download_folder=None, max_concurrent_dow
                     webhook_url=None, webhook_token=None, webhook_events=None,
                     app_password=None, prowlarr_url=None, prowlarr_api_key=None,
                     prowlarr_result_limit=None, torrentio_url=None, torrentio_filter=None):
-    """Validate and atomically persist mutable settings, updating this module."""
+    """Validate and atomically persist mutable settings, updating this module.
+
+    Only explicitly provided values (or values already in the file) are
+    written to config.toml. Environment-provided values stay effective at
+    runtime but are never copied into the file.
+    """
     global RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS, WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS
     global APP_PASSWORD, PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_RESULT_LIMIT, TORRENTIO_URL, TORRENTIO_FILTER
-    new_token = RD_API_KEY if rd_api_key is None or not rd_api_key.strip() else rd_api_key.strip()
-    new_folder = DOWNLOAD_FOLDER if download_folder is None else download_folder.strip()
-    if not new_token:
+    file_token = _saved.get("rd_api_key", "")
+    if rd_api_key is not None and rd_api_key.strip():
+        file_token = rd_api_key.strip()
+    if not (_env_value("rd_api_key") or file_token):
         raise ValueError("A Real-Debrid API key is required")
-    if not new_folder:
+    file_folder = _saved.get("download_folder", "") or str(DATA_DIR / "downloads")
+    if download_folder is not None:
+        file_folder = download_folder.strip()
+    eff_folder = _env_value("download_folder") or file_folder
+    if not eff_folder:
         raise ValueError("Download folder cannot be empty")
-    concurrency = MAX_CONCURRENT_DOWNLOADS if max_concurrent_downloads is None else int(max_concurrent_downloads)
+    if max_concurrent_downloads is None:
+        concurrency = int(_saved.get("max_concurrent", 3) or 3)
+    else:
+        concurrency = int(max_concurrent_downloads)
     if not 1 <= concurrency <= 20:
         raise ValueError("Concurrent downloads must be between 1 and 20")
-    new_webhook_url = WEBHOOK_URL if webhook_url is None else webhook_url.strip()
-    if new_webhook_url:
-        _validate_http_url(new_webhook_url, "Webhook URL")
-    new_webhook_token = WEBHOOK_TOKEN if webhook_token is None else webhook_token.strip()
-    new_webhook_events = WEBHOOK_EVENTS if webhook_events is None else _webhook_events(webhook_events)
+    file_webhook_url = _saved.get("webhook_url", "")
+    if webhook_url is not None:
+        file_webhook_url = webhook_url.strip()
+    if file_webhook_url:
+        _validate_http_url(file_webhook_url, "Webhook URL")
+    file_webhook_token = _saved.get("webhook_token", "")
+    if webhook_token is not None:
+        file_webhook_token = webhook_token.strip()
+    if webhook_events is None:
+        file_webhook_events = _webhook_events(_saved.get("webhook_events", ["download.completed"]))
+    else:
+        file_webhook_events = _webhook_events(webhook_events)
     new_password = _saved.get("app_password", "")
-    if app_password is not None and app_password.strip():
+    if app_password is not None:
+        # Empty string clears the stored password; None means "no change".
         new_password = app_password.strip()
-    new_prowlarr_url = PROWLARR_URL if prowlarr_url is None else prowlarr_url.strip()
-    if new_prowlarr_url:
-        _validate_http_url(new_prowlarr_url, "Prowlarr URL")
-    new_prowlarr_key = PROWLARR_API_KEY if prowlarr_api_key is None else prowlarr_api_key.strip()
-    new_prowlarr_limit = PROWLARR_RESULT_LIMIT if prowlarr_result_limit is None else int(prowlarr_result_limit)
-    if not 1 <= new_prowlarr_limit <= 500:
+    file_prowlarr_url = _saved.get("prowlarr_url", "")
+    if prowlarr_url is not None:
+        file_prowlarr_url = prowlarr_url.strip()
+    if file_prowlarr_url:
+        _validate_http_url(file_prowlarr_url, "Prowlarr URL")
+    file_prowlarr_key = _saved.get("prowlarr_api_key", "")
+    if prowlarr_api_key is not None:
+        file_prowlarr_key = prowlarr_api_key.strip()
+    if prowlarr_result_limit is None:
+        file_prowlarr_limit = int(_saved.get("prowlarr_result_limit", 20) or 20)
+    else:
+        file_prowlarr_limit = int(prowlarr_result_limit)
+    if not 1 <= file_prowlarr_limit <= 500:
         raise ValueError("Prowlarr result limit must be between 1 and 500")
-    new_torrentio_url = TORRENTIO_URL if torrentio_url is None else torrentio_url.strip()
-    if new_torrentio_url:
-        _validate_http_url(new_torrentio_url, "Torrentio URL")
-    new_torrentio_filter = TORRENTIO_FILTER if torrentio_filter is None else torrentio_filter.strip()
-    Path(new_folder).expanduser().mkdir(parents=True, exist_ok=True)
-    values = {"rd_api_key": new_token, "download_folder": new_folder, "max_concurrent": concurrency,
-              "webhook_url": new_webhook_url, "webhook_token": new_webhook_token,
-              "webhook_events": list(new_webhook_events),
-              "app_password": new_password, "prowlarr_url": new_prowlarr_url,
-              "prowlarr_api_key": new_prowlarr_key, "prowlarr_result_limit": new_prowlarr_limit,
-              "torrentio_url": new_torrentio_url, "torrentio_filter": new_torrentio_filter}
+    file_torrentio_url = _saved.get("torrentio_url", "") or "https://torrentio.strem.fun"
+    if torrentio_url is not None:
+        file_torrentio_url = torrentio_url.strip() or "https://torrentio.strem.fun"
+    if file_torrentio_url:
+        _validate_http_url(file_torrentio_url, "Torrentio URL")
+    file_torrentio_filter = _saved.get("torrentio_filter", "")
+    if torrentio_filter is not None:
+        file_torrentio_filter = torrentio_filter.strip()
+    Path(eff_folder).expanduser().mkdir(parents=True, exist_ok=True)
+    values = {"rd_api_key": file_token, "download_folder": file_folder, "max_concurrent": concurrency,
+              "webhook_url": file_webhook_url, "webhook_token": file_webhook_token,
+              "webhook_events": list(file_webhook_events),
+              "app_password": new_password, "prowlarr_url": file_prowlarr_url,
+              "prowlarr_api_key": file_prowlarr_key, "prowlarr_result_limit": file_prowlarr_limit,
+              "torrentio_url": file_torrentio_url, "torrentio_filter": file_torrentio_filter}
     _write_config_file(values)
     _saved.clear()
     _saved.update(_normalize_keys(values))
-    RD_API_KEY, DOWNLOAD_FOLDER, MAX_CONCURRENT_DOWNLOADS = new_token, str(Path(new_folder).expanduser()), concurrency
-    WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_EVENTS = new_webhook_url, new_webhook_token, new_webhook_events
+    RD_API_KEY = _setting("rd_api_key")
+    DOWNLOAD_FOLDER = str(Path((_setting("download_folder") or str(DATA_DIR / "downloads"))).expanduser())
+    MAX_CONCURRENT_DOWNLOADS = int(_setting("max_concurrent", 3) or 3)
+    WEBHOOK_URL, WEBHOOK_TOKEN = _setting("webhook_url", ""), _setting("webhook_token", "")
+    WEBHOOK_EVENTS = _webhook_events(_setting("webhook_events", "download.completed"))
     APP_PASSWORD = _setting("app_password") or API_KEY
-    PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_RESULT_LIMIT = new_prowlarr_url, new_prowlarr_key, new_prowlarr_limit
-    TORRENTIO_URL, TORRENTIO_FILTER = new_torrentio_url, new_torrentio_filter
+    if app_password is not None and (os.getenv("APP_PASSWORD") or API_KEY):
+        logging.warning("APP_PASSWORD is provided via environment; the stored file value is ignored while env is set.")
+    PROWLARR_URL = _setting("prowlarr_url", "")
+    PROWLARR_API_KEY = _setting("prowlarr_api_key", "")
+    PROWLARR_RESULT_LIMIT = int(_setting("prowlarr_result_limit", 20) or 20)
+    TORRENTIO_URL = _setting("torrentio_url", "https://torrentio.strem.fun")
+    TORRENTIO_FILTER = _setting("torrentio_filter", "")
     return public_settings()
 
 # Setup basic logging
