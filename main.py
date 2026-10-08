@@ -1262,7 +1262,8 @@ async def delete_download(download_id: str, delete_local: bool = False, auth=Dep
 async def websocket_endpoint(websocket: WebSocket):
     session = websocket.cookies.get(AUTH_COOKIE)
     session_valid = bool(session and sessions.get(session, 0) > time.time())
-    legacy_valid = bool(websocket.headers.get("x-api-key") in _api_keys())
+    ws_key = websocket.headers.get("x-api-key")
+    legacy_valid = bool(ws_key and ws_key in _api_keys())
     if config.APP_PASSWORD and not (session_valid or legacy_valid):
         await websocket.close(code=1008, reason="Authentication required")
         return
