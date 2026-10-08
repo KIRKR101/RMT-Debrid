@@ -130,7 +130,9 @@ class DownloadManager:
         async with self.bandwidth_lock:
             if self.bandwidth_tokens <= 0:
                 self.bandwidth_tokens = capacity
-            while True:
+                self.bandwidth_last_refill = time.monotonic()
+        while True:
+            async with self.bandwidth_lock:
                 now = time.monotonic()
                 elapsed = now - self.bandwidth_last_refill
                 self.bandwidth_last_refill = now
@@ -138,7 +140,8 @@ class DownloadManager:
                 if self.bandwidth_tokens >= byte_count:
                     self.bandwidth_tokens -= byte_count
                     return
-                await asyncio.sleep((byte_count - self.bandwidth_tokens) / rate)
+                wait = (byte_count - self.bandwidth_tokens) / rate
+            await asyncio.sleep(wait)
 
     def save_task_coalesced(self, task: DownloadTask, force: bool = False) -> None:
         """Reduce SQLite write amplification: persist at most every few seconds."""
