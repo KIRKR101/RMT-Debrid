@@ -586,7 +586,16 @@ async def _deliver_test_webhook(url: str) -> None:
 
 
 async def _validate_setup_webhook_destination(url: str) -> None:
-    """Reject setup-time webhook targets that resolve to local networks."""
+    """Reject pre-auth setup webhook targets that resolve to local networks.
+
+    This check is intentionally pre-auth only: anyone can reach the setup
+    endpoint before a household password exists, so it must not become a
+    blind SSRF proxy. Authenticated settings/test-webhook paths are
+    deliberately permissive (homelab webhooks routinely target LAN hosts
+    such as 192.168.x.x or localhost ntfy/Prowlarr instances); callers there
+    are already trusted with full settings write. Best effort only: DNS
+    results may change between check time and request time (TOCTOU).
+    """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -625,7 +634,12 @@ async def _validate_setup_webhook_destination(url: str) -> None:
 
 @app.post("/api/settings/test-webhook")
 async def test_webhook(payload: TestWebhookRequest, auth=Depends(verify_api_key)):
-    """Send a test `download.completed`-shaped payload without starting a download."""
+    """Send a test `download.completed`-shaped payload without starting a download.
+
+    No SSRF destination check here by design: the caller is authenticated
+    (trusted household) and homelab targets are commonly private/LAN.
+    See _validate_setup_webhook_destination for the pre-auth rationale.
+    """
     url = (payload.url or config.WEBHOOK_URL or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="No webhook URL configured")

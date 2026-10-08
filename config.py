@@ -301,6 +301,12 @@ def _env_value(canonical: str):
 
 
 def _validate_http_url(value: str, label: str) -> str:
+    """Scheme/host validation for stored URLs (authenticated settings path).
+
+    Deliberately scheme-only: stored webhook/Prowlarr/Torrentio URLs often
+    target homelab LAN hosts. Pre-auth SSRF protection lives in
+    main._validate_setup_webhook_destination.
+    """
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"{label} must use HTTP or HTTPS")
