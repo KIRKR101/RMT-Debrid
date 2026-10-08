@@ -1399,7 +1399,7 @@
 							<EmptyState
 								icon={Tray}
 								title="Queue is empty"
-								hint="Paste a link above. It will show up here with live progress."
+								hint="Paste a link above. It will show up here."
 							/>
 						{:else if filteredDownloads.length === 0}
 							<EmptyState
