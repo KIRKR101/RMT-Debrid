@@ -800,7 +800,7 @@
 												<Button
 													variant="outline"
 													size="sm"
-													class="h-7 text-xs"
+													class="h-8"
 													disabled={testingWebhook || !settings.webhook_url}
 													onclick={testWebhook}
 												>
