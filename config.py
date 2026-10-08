@@ -106,7 +106,22 @@ def _resolve_config_path() -> Path:
         override = os.getenv(variable)
         if override:
             path = Path(override).expanduser()
-            return path if path.suffix.lower() == ".toml" else path.with_suffix(".toml")
+            if path.suffix.lower() != ".toml":
+                target = path.with_suffix(".toml")
+                logging.warning(
+                    "%s points to %s; using %s instead (TOML only)",
+                    variable, path, target,
+                )
+                try:
+                    if path.is_file():
+                        logging.warning(
+                            "Existing %s will not be read; migrate its values to %s",
+                            path, target,
+                        )
+                except OSError:
+                    pass
+                return target
+            return path
     try:
         from paths import exe_dir, is_frozen
 
